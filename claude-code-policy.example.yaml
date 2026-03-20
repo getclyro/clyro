@@ -1,0 +1,58 @@
+# Clyro Claude Code Hooks — Example Policy Configuration
+# Copy to ~/.clyro/hooks/claude-code-policy.yaml and customize.
+#
+# Docs: https://docs.clyrohq.com/hooks  (canonical URL in clyro/constants.py)
+
+# ── Global limits ───────────────────────────────────────────────────────────
+global:
+  max_steps: 50              # Max tool calls per session before blocking
+  max_cost_usd: 10.0         # Max estimated token cost ($USD) per session
+  cost_per_token_usd: 0.00001  # Cost heuristic: chars/4 * this value
+
+  loop_detection:
+    threshold: 3             # Block if same tool+args repeated this many times
+    window: 10               # Within the most recent N tool calls
+
+  # Global policies — evaluated for ALL tools
+  policies:
+    - name: "Block recursive force delete"
+      parameter: command
+      operator: not_contains
+      value: "rm -rf"
+
+    - name: "Block /etc writes"
+      parameter: command
+      operator: not_contains
+      value: "/etc/"
+
+# ── Per-tool policies ───────────────────────────────────────────────────────
+tools:
+  Bash:
+    policies:
+      - name: "Block sudo commands"
+        parameter: command
+        operator: not_contains
+        value: "sudo"
+
+      - name: "Block curl to external"
+        parameter: command
+        operator: not_contains
+        value: "curl"
+
+# ── Cloud backend (optional) ───────────────────────────────────────────────
+# Set CLYRO_API_KEY env var or configure here.
+# When set, policies from the Clyro dashboard are merged with local policies.
+backend:
+  api_key: null              # Or set CLYRO_API_KEY env var
+  api_url: "https://api.clyrohq.com"  # canonical URL in clyro/constants.py
+  agent_name: "claude-code-session"
+  policy_cache_ttl_seconds: 300  # How often to refresh cloud policies
+
+# ── Audit logging ──────────────────────────────────────────────────────────
+audit:
+  log_path: "~/.clyro/hooks/audit.jsonl"
+  redact_parameters:
+    - "*password*"
+    - "*token*"
+    - "*secret*"
+    - "*api_key*"
