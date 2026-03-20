@@ -21,6 +21,29 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check clyro/
+
+      - name: Format check
+        run: ruff format --check clyro/
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -41,15 +64,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Lint
-        run: ruff check clyro/
-
       - name: Run tests
         run: pytest --cov=clyro --cov-report=term-missing -q
 
   build:
     name: Build distribution
-    needs: test
+    needs: [lint, test]
     runs-on: ubuntu-latest
 
     steps:
