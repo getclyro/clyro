@@ -26,6 +26,8 @@ venv/
 ENV/
 env/
 
+mise.toml
+
 # IDE/Editor
 .vscode/
 .idea/
