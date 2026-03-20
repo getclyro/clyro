@@ -3,12 +3,11 @@
 # Prerequisites:
 #   1. Create PyPI API token at https://pypi.org/manage/account/token/
 #   2. Add as GitHub secret: PYPI_API_TOKEN
-#   3. (Optional) Add TestPyPI token as TEST_PYPI_API_TOKEN for dry runs
 #
 # Usage:
 #   git tag v0.2.0
 #   git push origin v0.2.0
-#   → Triggers: test → build → publish-test-pypi → publish-pypi
+#   → Triggers: lint → test → build → publish-pypi
 
 name: Publish to PyPI
 
@@ -111,29 +110,9 @@ jobs:
           name: dist
           path: dist/
 
-  publish-test-pypi:
-    name: Publish to TestPyPI
-    needs: build
-    runs-on: ubuntu-latest
-    environment: test-pypi
-
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
-          skip-existing: true
-
   publish-pypi:
     name: Publish to PyPI
-    needs: publish-test-pypi
+    needs: build
     runs-on: ubuntu-latest
     environment: pypi
 
