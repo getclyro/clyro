@@ -497,7 +497,7 @@ tests/
 
 [Apache License 2.0](LICENSE)
 
-## Support
+## Support Links
 
 - Documentation: https://docs.clyrohq.com
 - Issues: https://github.com/getclyro/clyro/issues
