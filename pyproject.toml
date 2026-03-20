@@ -1,6 +1,6 @@
 [project]
 name = "clyro"
-version = "0.2.1"
+version = "0.2.2"
 description = "Runtime governance for AI agents — prevent failures before they happen"
 readme = "README.md"
 license = "Apache-2.0"
