@@ -117,7 +117,9 @@ class AuditLogger(BaseAuditLogger):
             summary_entry = {"block_type": block_reason, "tool_name": tool_name}
             self._violations.append(summary_entry)
             if block_reason in (
-                "step_limit_exceeded", "budget_exceeded", "loop_detected",
+                "step_limit_exceeded",
+                "budget_exceeded",
+                "loop_detected",
             ):
                 if block_reason not in self._controls_triggered:
                     self._controls_triggered.append(block_reason)

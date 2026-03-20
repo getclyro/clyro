@@ -302,21 +302,16 @@ class ClyroConfig(BaseModel):
             if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
                 return v
             raise ValueError(
-                f"OTLP export endpoint must use HTTPS for non-localhost hosts. "
-                f"Got: {v}"
+                f"OTLP export endpoint must use HTTPS for non-localhost hosts. Got: {v}"
             )
-        raise ValueError(
-            f"OTLP export endpoint must use HTTP or HTTPS scheme. Got: {v}"
-        )
+        raise ValueError(f"OTLP export endpoint must use HTTP or HTTPS scheme. Got: {v}")
 
     @field_validator("otlp_export_compression")
     @classmethod
     def validate_otlp_compression(cls, v: str) -> str:
         """Validate OTLP export compression. Implements FRD-S007."""
         if v not in ("gzip", "none"):
-            raise ValueError(
-                f"OTLP export compression must be 'gzip' or 'none'. Got: {v}"
-            )
+            raise ValueError(f"OTLP export compression must be 'gzip' or 'none'. Got: {v}")
         return v
 
     @field_validator("otlp_export_headers")
@@ -565,8 +560,14 @@ class PolicyRule(BaseModel):
     @classmethod
     def validate_operator(cls, v: str) -> str:
         allowed = {
-            "max_value", "min_value", "equals", "not_equals",
-            "in_list", "not_in_list", "contains", "not_contains",
+            "max_value",
+            "min_value",
+            "equals",
+            "not_equals",
+            "in_list",
+            "not_in_list",
+            "contains",
+            "not_contains",
         }
         if v not in allowed:
             raise ValueError(f"Unknown operator '{v}'. Allowed: {sorted(allowed)}")

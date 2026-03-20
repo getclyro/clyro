@@ -717,7 +717,9 @@ class CrewAICallbackHandler:
         self._session._check_step_limit()
         return step
 
-    def _check_loop(self, action_type: str, action_input: dict[str, Any] | None, agent_role: str | None) -> None:
+    def _check_loop(
+        self, action_type: str, action_input: dict[str, Any] | None, agent_role: str | None
+    ) -> None:
         """Check for infinite loops via session's LoopDetector.
 
         Builds a state snapshot from the current action context and delegates

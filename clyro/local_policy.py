@@ -58,6 +58,7 @@ def _warn_stderr(msg: str) -> None:
     except Exception:
         pass
 
+
 # ---------------------------------------------------------------------------
 # §3.1  SDKPolicyRule — extends shared PolicyRule with ``action`` field
 # Implements FRD-SOF-001
@@ -90,9 +91,7 @@ class SDKPolicyRule(PolicyRule):
     @classmethod
     def validate_action(cls, v: str) -> str:
         if v not in _VALID_ACTIONS:
-            raise ValueError(
-                f"Unknown policy action: '{v}'. Supported: block, require_approval"
-            )
+            raise ValueError(f"Unknown policy action: '{v}'. Supported: block, require_approval")
         return v
 
 
@@ -135,9 +134,7 @@ class SDKPolicyConfig(BaseModel):
     @classmethod
     def validate_version(cls, v: int) -> int:
         if v != 1:
-            raise ValueError(
-                f"Unsupported policy file version: {v}. Expected: 1"
-            )
+            raise ValueError(f"Unsupported policy file version: {v}. Expected: 1")
         return v
 
 
@@ -235,9 +232,7 @@ def load_sdk_policies() -> SDKPolicyConfig:
                 f"{_POLICY_DIR} — proceeding with zero rules"
             )
         except OSError as exc:
-            _warn_stderr(
-                f"[clyro] Warning: cannot write policy template: {exc}"
-            )
+            _warn_stderr(f"[clyro] Warning: cannot write policy template: {exc}")
         _loaded_config = empty_config
         _cache_populated = True
         return empty_config
@@ -256,9 +251,7 @@ def load_sdk_policies() -> SDKPolicyConfig:
     try:
         content = policy_path.read_text(encoding="utf-8")
     except OSError as exc:
-        _warn_stderr(
-            f"[clyro] Warning: cannot read policy file: {exc}"
-        )
+        _warn_stderr(f"[clyro] Warning: cannot read policy file: {exc}")
         _loaded_config = empty_config
         _cache_populated = True
         return empty_config
@@ -274,8 +267,7 @@ def load_sdk_policies() -> SDKPolicyConfig:
         data = yaml.safe_load(content)
     except yaml.YAMLError as exc:
         _warn_stderr(
-            f"[clyro] Warning: invalid YAML in {policy_path}: {exc} "
-            "— proceeding with zero rules"
+            f"[clyro] Warning: invalid YAML in {policy_path}: {exc} — proceeding with zero rules"
         )
         _loaded_config = empty_config
         _cache_populated = True
@@ -390,7 +382,8 @@ class SDKLocalPolicyEvaluator:
         # Zero rules → allow (FRD-SOF-002)
         if not all_rules:
             result = LocalPolicyEvaluationResult(
-                violated=False, decision="allow",
+                violated=False,
+                decision="allow",
             )
             self._emit_policy_event(result, action_type, parameters, session_id, step_number)
             return result
@@ -404,35 +397,55 @@ class SDKLocalPolicyEvaluator:
                 # Resolve parameter
                 found, actual = _resolve_local_parameter(parameters, rule.parameter)
                 if not found:
-                    rule_results.append(self._build_rule_result(
-                        rule, actual=None, outcome="skipped", action_taken="allow",
-                    ))
+                    rule_results.append(
+                        self._build_rule_result(
+                            rule,
+                            actual=None,
+                            outcome="skipped",
+                            action_taken="allow",
+                        )
+                    )
                     continue
 
                 # Evaluate rule
                 is_violated = _evaluate_local_rule(rule, actual)
 
                 if not is_violated:
-                    rule_results.append(self._build_rule_result(
-                        rule, actual=actual, outcome="passed", action_taken="allow",
-                    ))
+                    rule_results.append(
+                        self._build_rule_result(
+                            rule,
+                            actual=actual,
+                            outcome="passed",
+                            action_taken="allow",
+                        )
+                    )
                     continue
 
                 # Implements FRD-SOF-002: action-based enforcement
                 should_block = self._enforce_violated_rule(rule, action_type)
                 if not should_block:
                     # require_approval was approved → continue to next rule
-                    rule_results.append(self._build_rule_result(
-                        rule, actual=actual, outcome="approved", action_taken="allow",
-                    ))
+                    rule_results.append(
+                        self._build_rule_result(
+                            rule,
+                            actual=actual,
+                            outcome="approved",
+                            action_taken="allow",
+                        )
+                    )
                     continue
 
                 # Block: record and short-circuit
                 violated = True
                 violation_details = self._build_violation_details(rule, actual, action_type)
-                rule_results.append(self._build_rule_result(
-                    rule, actual=actual, outcome="triggered", action_taken="block",
-                ))
+                rule_results.append(
+                    self._build_rule_result(
+                        rule,
+                        actual=actual,
+                        outcome="triggered",
+                        action_taken="block",
+                    )
+                )
                 break
 
             except Exception as exc:
@@ -443,10 +456,15 @@ class SDKLocalPolicyEvaluator:
                     error=str(exc),
                     fail_open=True,
                 )
-                rule_results.append(self._build_rule_result(
-                    rule, actual=None, outcome="skipped", action_taken="allow",
-                    message=f"Error: {exc}",
-                ))
+                rule_results.append(
+                    self._build_rule_result(
+                        rule,
+                        actual=None,
+                        outcome="skipped",
+                        action_taken="allow",
+                        message=f"Error: {exc}",
+                    )
+                )
                 continue
 
         result = LocalPolicyEvaluationResult(

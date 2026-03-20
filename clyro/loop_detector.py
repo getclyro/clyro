@@ -177,8 +177,7 @@ class LoopDetector:
                 filtered[key] = self._filter_state(value)
             elif isinstance(value, list):
                 filtered[key] = [
-                    self._filter_state(item) if isinstance(item, dict) else item
-                    for item in value
+                    self._filter_state(item) if isinstance(item, dict) else item for item in value
                 ]
             else:
                 filtered[key] = value
@@ -297,11 +296,7 @@ class LoopDetector:
         with the first being a ``str`` and the second a ``dict``.
         """
         # --- Legacy positional API: check("tool", {"x": 1}) -> (bool, dict) ---
-        if (
-            len(args) >= 2
-            and isinstance(args[0], str)
-            and isinstance(args[1], dict)
-        ):
+        if len(args) >= 2 and isinstance(args[0], str) and isinstance(args[1], dict):
             return self._check_legacy(args[0], args[1])
 
         # --- Enhanced keyword API ---
@@ -313,9 +308,7 @@ class LoopDetector:
             session_id=kwargs.get("session_id"),
         )
 
-    def _check_legacy(
-        self, tool_name: str, params: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
+    def _check_legacy(self, tool_name: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         """Sliding-window check for MCP wrapper compatibility."""
         call_sig = self.compute_state_hash({"tool": tool_name, **params}) or ""
         self._call_history.append(call_sig)
@@ -351,9 +344,7 @@ class LoopDetector:
             self._state.recent_actions.append(action)
             action_signal = self._check_action_sequence_loop()
             # Prefer state-based signal, but use action signal if stronger
-            if action_signal and (
-                signal is None or action_signal.confidence > signal.confidence
-            ):
+            if action_signal and (signal is None or action_signal.confidence > signal.confidence):
                 signal = action_signal
 
         if signal and raise_on_loop:
@@ -387,9 +378,7 @@ class LoopDetector:
             "recent_actions_count": len(self._state.recent_actions),
             "recent_states_count": len(self._state.recent_states),
             "max_state_repetitions": (
-                max(self._state.state_hash_counts.values())
-                if self._state.state_hash_counts
-                else 0
+                max(self._state.state_hash_counts.values()) if self._state.state_hash_counts else 0
             ),
             "threshold": self.threshold,
         }

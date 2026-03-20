@@ -236,9 +236,7 @@ class ModelSelector:
         """
         if task_type not in cls.TASK_PROFILES:
             available = ", ".join(cls.TASK_PROFILES.keys())
-            raise ValueError(
-                f"Unknown task type: '{task_type}'. Available types: {available}"
-            )
+            raise ValueError(f"Unknown task type: '{task_type}'. Available types: {available}")
 
         profile = cls.TASK_PROFILES[task_type].copy()
 
@@ -280,9 +278,7 @@ class ModelSelector:
             models = profile["recommended_models"]
             sorted_models = sorted(
                 models,
-                key=lambda m: next(
-                    (i for i, p in enumerate(speed_priority) if p in m), 999
-                ),
+                key=lambda m: next((i for i, p in enumerate(speed_priority) if p in m), 999),
             )
             profile["recommended_models"] = sorted_models
 
@@ -340,9 +336,7 @@ class ModelSelector:
             if est_cost <= budget_usd:
                 profile["recommended_models"] = [cheap_model]
                 profile["expected_cost_usd"] = est_cost
-                profile["rationale"] += (
-                    f" (Budget-optimized: switched to {cheap_model})"
-                )
+                profile["rationale"] += f" (Budget-optimized: switched to {cheap_model})"
                 return profile
 
         # If still over budget, try reducing max_tokens
@@ -395,9 +389,7 @@ class ModelSelector:
         """
         if task_type not in cls.TASK_PROFILES:
             available = ", ".join(cls.TASK_PROFILES.keys())
-            raise ValueError(
-                f"Unknown task type: '{task_type}'. Available types: {available}"
-            )
+            raise ValueError(f"Unknown task type: '{task_type}'. Available types: {available}")
 
         return cls.TASK_PROFILES[task_type].copy()
 

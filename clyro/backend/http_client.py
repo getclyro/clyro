@@ -136,7 +136,9 @@ class HttpSyncClient:
             Response payload: ``{"accepted": int, "rejected": int, "errors": []}``
         """
         response = await self._request_with_retry(
-            "POST", "/v1/traces", body={"events": events},
+            "POST",
+            "/v1/traces",
+            body={"events": events},
         )
         return response.json()
 
@@ -188,7 +190,9 @@ class HttpSyncClient:
             Response payload: ``{"accepted": int, "rejected": int, "errors": []}``
         """
         response = await self._request_with_retry(
-            "POST", "/v1/policy-violations", body={"violations": violations},
+            "POST",
+            "/v1/policy-violations",
+            body={"violations": violations},
         )
         return response.json()
 

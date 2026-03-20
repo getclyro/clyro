@@ -202,7 +202,9 @@ class Session:
             # Fail-open: session start is infrastructure, must never block agent
             self._start_time = self._start_time or time.perf_counter()
             self._is_active = True
-            logger.warning("clyro_session_start_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_session_start_failed", session_id=str(self.session_id), fail_open=True
+            )
             return None
 
     def end(
@@ -264,7 +266,9 @@ class Session:
             # Fail-open: session end is infrastructure, must never block agent
             self._is_active = False
             self._error = error
-            logger.warning("clyro_session_end_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_session_end_failed", session_id=str(self.session_id), fail_open=True
+            )
             return None
 
     def record_step(
@@ -345,7 +349,9 @@ class Session:
                 self._events.append(event)
             return event
         except Exception:
-            logger.warning("clyro_record_step_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_record_step_failed", session_id=str(self.session_id), fail_open=True
+            )
             return None
 
     def record_event(self, event: TraceEvent) -> None:
@@ -410,7 +416,9 @@ class Session:
 
             self._events.append(event)
         except Exception:
-            logger.warning("clyro_record_event_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_record_event_failed", session_id=str(self.session_id), fail_open=True
+            )
             return
 
         # ENFORCEMENT — these MUST raise
@@ -456,7 +464,9 @@ class Session:
                 self._events.append(event)
             return event
         except Exception:
-            logger.warning("clyro_record_error_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_record_error_failed", session_id=str(self.session_id), fail_open=True
+            )
             return None
 
     def add_cost(self, cost_usd: Decimal) -> None:
@@ -625,7 +635,9 @@ class Session:
                         cost_usd=str(cost_usd),
                     )
         except Exception:
-            logger.warning("clyro_cost_calculation_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_cost_calculation_failed", session_id=str(self.session_id), fail_open=True
+            )
 
         # Update cumulative cost
         self._cumulative_cost += cost_usd
@@ -653,13 +665,16 @@ class Session:
                 output_text = output_data
             else:
                 output_text = str(output_data)
-        self.check_policy("llm_call", {
-            "model": model,
-            "cost": float(self._cumulative_cost),
-            "step_number": self._step_number,
-            "input": str(input_data) if input_data else "",
-            "output": output_text,
-        })
+        self.check_policy(
+            "llm_call",
+            {
+                "model": model,
+                "cost": float(self._cumulative_cost),
+                "step_number": self._step_number,
+                "input": str(input_data) if input_data else "",
+                "output": output_text,
+            },
+        )
 
         # Infrastructure: event creation (fail-open)
         try:
@@ -668,7 +683,9 @@ class Session:
                 metadata["generation_params"] = generation_params
 
             if self.config.capture_outputs and output_data is not None:
-                event_output_data = output_data if isinstance(output_data, dict) else {"content": output_text}
+                event_output_data = (
+                    output_data if isinstance(output_data, dict) else {"content": output_text}
+                )
             else:
                 event_output_data = None if self.config.capture_outputs else None
 
@@ -702,7 +719,9 @@ class Session:
 
             return event
         except Exception:
-            logger.warning("clyro_record_llm_call_failed", session_id=str(self.session_id), fail_open=True)
+            logger.warning(
+                "clyro_record_llm_call_failed", session_id=str(self.session_id), fail_open=True
+            )
             return None
 
     def _check_step_limit(self) -> None:
@@ -806,7 +825,11 @@ class Session:
                     if self._event_sink is not None:
                         self._event_sink(event)
             except Exception:
-                logger.warning("clyro_policy_event_drain_failed", session_id=str(self.session_id), fail_open=True)
+                logger.warning(
+                    "clyro_policy_event_drain_failed",
+                    session_id=str(self.session_id),
+                    fail_open=True,
+                )
 
     async def check_policy_async(
         self,
@@ -853,7 +876,11 @@ class Session:
                     if self._event_sink is not None:
                         self._event_sink(event)
             except Exception:
-                logger.warning("clyro_policy_event_drain_failed", session_id=str(self.session_id), fail_open=True)
+                logger.warning(
+                    "clyro_policy_event_drain_failed",
+                    session_id=str(self.session_id),
+                    fail_open=True,
+                )
 
     @staticmethod
     def _serialize_for_token_estimate(payload: Any) -> str | None:

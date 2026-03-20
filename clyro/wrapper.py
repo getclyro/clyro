@@ -640,7 +640,8 @@ class WrappedAgent(Generic[T]):
             if self._local_logger is not None and e.details:
                 try:
                     self._local_logger.log_violation(
-                        e.action_type or "unknown", e.details,
+                        e.action_type or "unknown",
+                        e.details,
                     )
                 except Exception:
                     pass  # Fail-open
@@ -746,7 +747,9 @@ class WrappedAgent(Generic[T]):
                         self._buffer_event_sync(error_event)
                 except Exception:
                     logger.warning(
-                        "clyro_error_recording_failed", error_type="execution_control", fail_open=True
+                        "clyro_error_recording_failed",
+                        error_type="execution_control",
+                        fail_open=True,
                     )
                 raise
 
@@ -839,7 +842,8 @@ class WrappedAgent(Generic[T]):
             if self._local_logger is not None and e.details:
                 try:
                     self._local_logger.log_violation(
-                        e.action_type or "unknown", e.details,
+                        e.action_type or "unknown",
+                        e.details,
                     )
                 except Exception:
                     pass  # Fail-open
@@ -945,7 +949,9 @@ class WrappedAgent(Generic[T]):
                         await self._buffer_event_async(error_event)
                 except Exception:
                     logger.warning(
-                        "clyro_error_recording_failed", error_type="execution_control", fail_open=True
+                        "clyro_error_recording_failed",
+                        error_type="execution_control",
+                        fail_open=True,
                     )
                 raise
 

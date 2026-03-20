@@ -101,10 +101,7 @@ class LocalTerminalLogger:
 
         if decision == "BLOCK":
             rule_name = meta.get("rule_name", "unknown")
-            _write_stderr(
-                f"[clyro] Policy BLOCK \u2014 {action_type}: "
-                f'rule "{rule_name}" violated'
-            )
+            _write_stderr(f'[clyro] Policy BLOCK \u2014 {action_type}: rule "{rule_name}" violated')
         else:
             _write_stderr(
                 f"[clyro] Policy ALLOW \u2014 {action_type}: "
@@ -171,16 +168,14 @@ class LocalTerminalLogger:
             controls_triggered: list[str] = []
             for ev in session.events:
                 if ev.event_name in (
-                    "execution_control", "step_limit_exceeded",
-                    "cost_limit_exceeded", "loop_detected",
+                    "execution_control",
+                    "step_limit_exceeded",
+                    "cost_limit_exceeded",
+                    "loop_detected",
                 ):
                     controls_triggered.append(ev.event_name)
 
-            violation_text = (
-                f"{len(violations)} ({', '.join(violations)})"
-                if violations
-                else "0"
-            )
+            violation_text = f"{len(violations)} ({', '.join(violations)})" if violations else "0"
             controls_text = (
                 ", ".join(controls_triggered) if controls_triggered else "none triggered"
             )

@@ -33,11 +33,7 @@ class ClyroError(Exception):
     _ISSUE_TRACKER = ISSUE_TRACKER_URL
 
     def __str__(self) -> str:
-        base = (
-            f"{self.message} (details: {self.details})"
-            if self.details
-            else self.message
-        )
+        base = f"{self.message} (details: {self.details})" if self.details else self.message
         return f"{base}\n  Report at {self._ISSUE_TRACKER}"
 
 

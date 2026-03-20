@@ -115,9 +115,7 @@ def _persist_agent_id(instance_id: str, agent_id: str, *, confirmed: bool) -> No
         logger.warning("agent_id_persist_failed")
 
 
-async def _register_and_close(
-    client: HttpSyncClient, agent_name: str
-) -> str:
+async def _register_and_close(client: HttpSyncClient, agent_name: str) -> str:
     """Register agent with backend and close client in one event loop."""
     try:
         return await client.register_agent(agent_name, framework=AGENT_FRAMEWORK)
@@ -482,12 +480,8 @@ def report_violation(
         violation["rule_id"] = violation_details.get("rule_name", "unknown")
         violation["rule_name"] = violation_details.get("rule_name", "unknown")
         violation["operator"] = violation_details.get("operator", "")
-        violation["expected_value"] = json.dumps(
-            violation_details.get("expected"), default=str
-        )
-        violation["actual_value"] = json.dumps(
-            violation_details.get("actual"), default=str
-        )
+        violation["expected_value"] = json.dumps(violation_details.get("expected"), default=str)
+        violation["actual_value"] = json.dumps(violation_details.get("actual"), default=str)
 
     if tool_input:
         violation["parameters_hash"] = hashlib.sha256(

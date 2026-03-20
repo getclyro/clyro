@@ -106,6 +106,7 @@ class ConsoleApprovalHandler:
                 return False
             print("Please enter 'y' or 'n'.")
 
+
 logger = structlog.get_logger(__name__)
 
 # Tighter timeouts than transport — policy checks are latency-sensitive
@@ -266,9 +267,7 @@ class PolicyClient:
             )
             self._async_client_loop_id = current_loop_id
 
-        payload = self._build_payload(
-            agent_id, action_type, parameters, session_id, step_number
-        )
+        payload = self._build_payload(agent_id, action_type, parameters, session_id, step_number)
 
         url = f"{self._config.endpoint}/v1/policies/evaluate"
         response = await self._async_client.post(url, json=payload)
@@ -309,9 +308,7 @@ class PolicyClient:
                 headers=self._get_headers(),
             )
 
-        payload = self._build_payload(
-            agent_id, action_type, parameters, session_id, step_number
-        )
+        payload = self._build_payload(agent_id, action_type, parameters, session_id, step_number)
 
         url = f"{self._config.endpoint}/v1/policies/evaluate"
         response = self._sync_client.post(url, json=payload)
@@ -496,9 +493,9 @@ class PolicyEvaluator:
         - fail_open=False: Raise PolicyViolationError to block the action
         """
         # HTTP 401/403 = auth/permission config error → disable enforcement
-        is_auth_error = (
-            isinstance(error, httpx.HTTPStatusError)
-            and error.response.status_code in (401, 403)
+        is_auth_error = isinstance(error, httpx.HTTPStatusError) and error.response.status_code in (
+            401,
+            403,
         )
 
         if is_auth_error:
@@ -513,7 +510,7 @@ class PolicyEvaluator:
                 agent_id=str(self._agent_id),
                 session_id=str(session_id) if session_id else None,
                 hint="Policy enforcement auto-disabled for this session. "
-                     "Fix API key permissions to re-enable.",
+                "Fix API key permissions to re-enable.",
             )
             return PolicyDecision.allow()
 
@@ -629,7 +626,11 @@ class PolicyEvaluator:
     ) -> None:
         """Create and buffer a POLICY_CHECK event for the audit trail."""
         event = self.create_policy_check_event(
-            decision, action_type, parameters, session_id, step_number,
+            decision,
+            action_type,
+            parameters,
+            session_id,
+            step_number,
         )
         self._events.append(event)
 
@@ -798,10 +799,18 @@ class LocalPolicyEvaluator:
     A violation from either blocks the call.
     """
 
-    OPERATORS = frozenset({
-        "max_value", "min_value", "equals", "not_equals",
-        "in_list", "not_in_list", "contains", "not_contains",
-    })
+    OPERATORS = frozenset(
+        {
+            "max_value",
+            "min_value",
+            "equals",
+            "not_equals",
+            "in_list",
+            "not_in_list",
+            "contains",
+            "not_contains",
+        }
+    )
 
     def __init__(self, config: Any) -> None:
         """
@@ -880,11 +889,7 @@ class LocalPolicyEvaluator:
         violated = _evaluate_local_rule(rule, actual)
         outcome = "triggered" if violated else "passed"
         action = "block" if violated else "allow"
-        message = (
-            f"Blocked: {rule.name or rule.parameter}"
-            if violated
-            else None
-        )
+        message = f"Blocked: {rule.name or rule.parameter}" if violated else None
 
         return {
             "policy_id": rule.policy_id,

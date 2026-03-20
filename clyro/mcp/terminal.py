@@ -36,6 +36,7 @@ _ISSUE_TRACKER = ISSUE_TRACKER_URL
 # CLYRO_QUIET gate — shared logic with local_logger.py
 # ---------------------------------------------------------------------------
 
+
 def is_quiet() -> bool:
     """Check if ``CLYRO_QUIET`` suppresses terminal output.
 
@@ -60,6 +61,7 @@ def write_stderr(text: str) -> None:
 # ---------------------------------------------------------------------------
 # Session-end governance summary
 # ---------------------------------------------------------------------------
+
 
 class McpTerminalLogger:
     """

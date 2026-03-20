@@ -34,9 +34,9 @@ logger = structlog.get_logger(__name__)
 
 # Status mapping: Clyro → OTLP StatusCode (TDD §3.3)
 _STATUS_MAP = {
-    "success": 1,    # STATUS_CODE_OK
-    "error": 2,      # STATUS_CODE_ERROR
-    "unknown": 0,    # STATUS_CODE_UNSET
+    "success": 1,  # STATUS_CODE_OK
+    "error": 2,  # STATUS_CODE_ERROR
+    "unknown": 0,  # STATUS_CODE_UNSET
 }
 
 
@@ -67,9 +67,7 @@ class OTLPExporter:
         self._queue_size = config.otlp_export_queue_size
         self._agent_name = config.agent_name or "unknown"
 
-        self._queue: asyncio.Queue[list[TraceEvent]] = asyncio.Queue(
-            maxsize=self._queue_size
-        )
+        self._queue: asyncio.Queue[list[TraceEvent]] = asyncio.Queue(maxsize=self._queue_size)
         self._running = False
         self._worker_task: asyncio.Task | None = None
         self._client: httpx.AsyncClient | None = None
@@ -164,9 +162,7 @@ class OTLPExporter:
         while self._running or not self._queue.empty():
             try:
                 # Use timeout to allow checking self._running periodically
-                events = await asyncio.wait_for(
-                    self._queue.get(), timeout=1.0
-                )
+                events = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 await self._send_batch(events)
             except TimeoutError:
                 continue
@@ -288,9 +284,7 @@ class OTLPExporter:
                     )
                 )
 
-        request = ExportTraceServiceRequest(
-            resource_spans=resource_spans_list
-        )
+        request = ExportTraceServiceRequest(resource_spans=resource_spans_list)
         return request.SerializeToString()
 
     def _translate_event(self, event: TraceEvent) -> Any:
@@ -321,7 +315,9 @@ class OTLPExporter:
         end_time_ns = start_time_ns + (event.duration_ms * 1_000_000)
 
         # Status mapping (FRD-S003)
-        status_value = event.metadata.get("_otlp_status", "unknown") if event.metadata else "unknown"
+        status_value = (
+            event.metadata.get("_otlp_status", "unknown") if event.metadata else "unknown"
+        )
         # Derive status from event_type if no _otlp_status
         if event.event_type == EventType.ERROR:
             status_code = 2  # ERROR
@@ -369,6 +365,7 @@ class OTLPExporter:
         """Extract host from endpoint URL for safe logging (FRD-S005)."""
         try:
             from urllib.parse import urlparse
+
             parsed = urlparse(self._endpoint)
             return parsed.hostname or "unknown"
         except Exception:

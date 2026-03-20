@@ -580,9 +580,7 @@ class HeuristicCostEstimator:
 
     def __init__(self, cost_per_token_usd: float = 0.00001) -> None:
         if cost_per_token_usd <= 0:
-            raise ValueError(
-                f"cost_per_token_usd must be > 0, got {cost_per_token_usd}"
-            )
+            raise ValueError(f"cost_per_token_usd must be > 0, got {cost_per_token_usd}")
         self._cost_per_token_usd = cost_per_token_usd
 
     @property
@@ -602,9 +600,7 @@ class HeuristicCostEstimator:
         cost = estimated_tokens * self._cost_per_token_usd
         return cost, estimated_tokens
 
-    def estimate_round_trip(
-        self, params_json_len: int, response_content_len: int
-    ) -> float:
+    def estimate_round_trip(self, params_json_len: int, response_content_len: int) -> float:
         """
         Compute estimated cost for a completed call (params + response).
 
@@ -658,9 +654,7 @@ class CostTracker:
 
         params_json = _json.dumps(params or {}, default=str)
         estimated_input_tokens = len(params_json) / 4
-        estimated_round_trip_cost = (
-            estimated_input_tokens * 2 * self._estimator.cost_per_token_usd
-        )
+        estimated_round_trip_cost = estimated_input_tokens * 2 * self._estimator.cost_per_token_usd
 
         if accumulated_cost_usd + estimated_round_trip_cost > self._max_cost_usd:
             return True, {
@@ -678,6 +672,4 @@ class CostTracker:
         Returns:
             Estimated cost in USD for this single call.
         """
-        return self._estimator.estimate_round_trip(
-            params_json_len, response_content_len
-        )
+        return self._estimator.estimate_round_trip(params_json_len, response_content_len)

@@ -81,8 +81,10 @@ __all__ = [
 def __getattr__(name: str):
     if name == "mcp":
         from clyro import mcp as _mcp
+
         return _mcp
     if name == "hooks":
         from clyro import hooks as _hooks
+
         return _hooks
     raise AttributeError(f"module 'clyro' has no attribute {name!r}")
