@@ -162,7 +162,7 @@ class Transport:
         self._client: httpx.AsyncClient | None = None
         self._running = False
         self._event_buffer: list[TraceEvent] = []
-        self._buffer_lock = asyncio.Lock()
+        self._buffer_lock: asyncio.Lock | None = None
 
         # Create event sender for SyncWorker
         self._sender = HttpEventSender(config, self._get_client)
@@ -181,6 +181,12 @@ class Transport:
             from clyro.otlp_exporter import OTLPExporter
 
             self._otlp_exporter = OTLPExporter(config)
+
+    def _get_buffer_lock(self) -> asyncio.Lock:
+        """Lazily create buffer lock in the current event loop."""
+        if self._buffer_lock is None:
+            self._buffer_lock = asyncio.Lock()
+        return self._buffer_lock
 
     @property
     def endpoint(self) -> str:
@@ -211,7 +217,7 @@ class Transport:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
             headers = {
-                "User-Agent": "clyro-sdk/0.1.0",
+                "User-Agent": "clyro-sdk/0.2.3",
                 "Content-Type": "application/json",
             }
             if self.config.api_key:
@@ -339,7 +345,7 @@ class Transport:
         # Check if we need to flush (before acquiring lock)
         should_flush = False
 
-        async with self._buffer_lock:
+        async with self._get_buffer_lock():
             # Prevent memory exhaustion with buffer size limit
             MAX_BUFFER_SIZE = self.config.batch_size * 10  # 10x batch size
             if len(self._event_buffer) >= MAX_BUFFER_SIZE:
@@ -362,7 +368,7 @@ class Transport:
 
     async def _flush_buffer(self) -> None:
         """Flush buffered events to the backend."""
-        async with self._buffer_lock:
+        async with self._get_buffer_lock():
             if not self._event_buffer:
                 return
 

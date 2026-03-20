@@ -135,7 +135,13 @@ class CircuitBreaker:
         self._success_count = 0
         self._last_failure_time: float | None = None
         self._half_open_requests = 0
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Lazily create lock in the current event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def state(self) -> CircuitState:
@@ -154,7 +160,7 @@ class CircuitBreaker:
         Returns:
             True if request should proceed, False if blocked
         """
-        async with self._lock:
+        async with self._get_lock():
             if self._state == CircuitState.CLOSED:
                 return True
 
@@ -182,7 +188,7 @@ class CircuitBreaker:
 
     async def record_success(self) -> None:
         """Record a successful request."""
-        async with self._lock:
+        async with self._get_lock():
             if self._state == CircuitState.HALF_OPEN:
                 self._success_count += 1
                 if self._success_count >= self.config.success_threshold:
@@ -204,7 +210,7 @@ class CircuitBreaker:
         Returns:
             True if circuit tripped open
         """
-        async with self._lock:
+        async with self._get_lock():
             self._failure_count += 1
             self._last_failure_time = time.monotonic()
 
@@ -383,12 +389,13 @@ class SyncWorker:
         # Metrics
         self._metrics = SyncMetrics()
 
-        # Worker state
+        # Worker state — asyncio primitives are created lazily in start()
+        # to bind to the correct event loop.
         self._running = False
         self._task: asyncio.Task | None = None
-        self._immediate_sync_event = asyncio.Event()
-        self._shutdown_event = asyncio.Event()
-        self._lock = asyncio.Lock()
+        self._immediate_sync_event: asyncio.Event | None = None
+        self._shutdown_event: asyncio.Event | None = None
+        self._lock: asyncio.Lock | None = None
 
         # Sync state
         self._last_sync_attempt: datetime | None = None
@@ -428,6 +435,11 @@ class SyncWorker:
             logger.warning("sync_worker_already_running")
             return
 
+        # Create asyncio primitives in the running event loop
+        self._immediate_sync_event = asyncio.Event()
+        self._shutdown_event = asyncio.Event()
+        self._lock = asyncio.Lock()
+
         self._running = True
         self._shutdown_event.clear()
         self._task = asyncio.create_task(self._sync_loop())
@@ -449,7 +461,8 @@ class SyncWorker:
             return
 
         self._running = False
-        self._shutdown_event.set()
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
 
         if self._task:
             try:
@@ -472,7 +485,8 @@ class SyncWorker:
     async def trigger_immediate_sync(self) -> None:
         """Trigger an immediate sync attempt."""
         self._pending_immediate_sync = True
-        self._immediate_sync_event.set()
+        if self._immediate_sync_event is not None:
+            self._immediate_sync_event.set()
 
     async def sync_now(self) -> dict[str, Any]:
         """
@@ -491,7 +505,8 @@ class SyncWorker:
             # Trigger immediate sync on reconnection
             logger.info("connectivity_restored_triggering_sync")
             self._pending_immediate_sync = True
-            self._immediate_sync_event.set()
+            if self._immediate_sync_event is not None:
+                self._immediate_sync_event.set()
 
             # Reset circuit breaker on connectivity restore
             self._circuit_breaker.reset()

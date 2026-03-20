@@ -132,7 +132,7 @@ rules:
 ```python
 # Add API key to enable cloud features: dashboards, team policies, session replay
 config = ClyroConfig(
-    api_key="cly_live_...",  # Get from clyrohq.com
+    api_key=os.environ.get("CLYRO_API_KEY"),  # Get from clyrohq.com
     agent_name="my-agent",
     controls=ExecutionControls(max_steps=50, max_cost_usd=2.0),
 )
@@ -143,7 +143,7 @@ config = ClyroConfig(
 ### Environment Variables
 
 ```bash
-export CLYRO_API_KEY="cly_live_..."
+export CLYRO_API_KEY="your-clyro-api-key"
 export CLYRO_ENDPOINT="https://api.clyrohq.com"
 export CLYRO_AGENT_NAME="my-agent"
 export CLYRO_MAX_STEPS="50"
@@ -164,7 +164,7 @@ from clyro import ClyroConfig, ExecutionControls
 
 config = ClyroConfig(
     # Authentication
-    api_key="cly_live_...",
+    api_key=os.environ.get("CLYRO_API_KEY"),
     endpoint="https://api.clyrohq.com",
 
     # Agent identification
@@ -439,6 +439,21 @@ except ClyroError as e:
 | **Any Python callable** | `@clyro.wrap` | Generic adapter, works with sync/async |
 
 ## Documentation
+
+### Usage Guides
+
+| Guide | Description |
+|-------|-------------|
+| [LangGraph](docs/sdk/langgraph.md) | Wrap LangGraph agents with governance |
+| [CrewAI](docs/sdk/crewai.md) | Wrap CrewAI agents with governance |
+| [Claude Agent SDK](docs/sdk/claude_agent_sdk.md) | Wrap Claude Agent SDK with governance |
+| [Anthropic SDK](docs/sdk/anthropic.md) | Wrap Anthropic SDK calls with governance |
+| [MCP Wrapper](docs/mcp/mcp_wrapper.md) | Govern MCP tool calls in Claude Desktop, Cursor, VS Code |
+| [Claude Code Hooks](docs/hooks/claude_code_hooks.md) | Block destructive commands in Claude Code |
+| [OpenTelemetry](docs/otel/opentelemetry.md) | Export traces to OTLP-compatible backends |
+| [CX Policy](docs/policy/cx_policy.md) | Configure customer experience policies |
+
+### Reference
 
 - [API Reference](https://docs.clyrohq.com/sdk) — Full API documentation
 - [CHANGELOG](CHANGELOG.md) — Version history
