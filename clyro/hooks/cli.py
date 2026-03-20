@@ -15,6 +15,8 @@ import time
 
 import structlog
 
+from clyro.constants import ISSUE_TRACKER_URL
+
 from .audit import AuditLogger
 from .backend import resolve_agent_id
 from .config import ConfigError, HookConfig, load_hook_config
@@ -23,8 +25,6 @@ from .evaluator import evaluate
 from .models import HookInput
 from .state import StateLock, load_state, save_state
 from .tracer import handle_session_end, handle_tool_complete
-
-from clyro.constants import ISSUE_TRACKER_URL
 
 logger = structlog.get_logger()
 

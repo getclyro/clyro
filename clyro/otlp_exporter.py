@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import gzip
-import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -29,7 +28,7 @@ import structlog
 if TYPE_CHECKING:
     from clyro.config import ClyroConfig
 
-from clyro.trace import AgentStage, EventType, TraceEvent
+from clyro.trace import EventType, TraceEvent
 
 logger = structlog.get_logger(__name__)
 
@@ -115,7 +114,7 @@ class OTLPExporter:
                     self._worker_task,
                     timeout=self._timeout_ms / 1000.0,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 remaining = self._queue.qsize()
                 if remaining > 0:
                     logger.warning(
@@ -169,7 +168,7 @@ class OTLPExporter:
                     self._queue.get(), timeout=1.0
                 )
                 await self._send_batch(events)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except asyncio.CancelledError:
                 raise
@@ -244,8 +243,6 @@ class OTLPExporter:
         from opentelemetry.proto.trace.v1.trace_pb2 import (
             ResourceSpans,
             ScopeSpans,
-            Span,
-            Status,
         )
 
         # Group events by session_id (each session → one ResourceSpans)
@@ -255,7 +252,7 @@ class OTLPExporter:
             sessions.setdefault(sid, []).append(event)
 
         resource_spans_list = []
-        for session_id, session_events in sessions.items():
+        for _session_id, session_events in sessions.items():
             # Build Resource with agent name attributes (FRD-S003)
             resource = Resource(
                 attributes=[

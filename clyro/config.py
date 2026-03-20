@@ -14,11 +14,13 @@ validation, defaults, and type safety.
 from __future__ import annotations
 
 import os
+import sys
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
 import structlog
+import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from clyro.constants import DEFAULT_API_URL
@@ -534,13 +536,6 @@ def reset_config() -> None:
 # Consolidated from clyro_mcp.config — Implements FRD-006
 # MCP/hooks configuration models for YAML-based policy and wrapper config.
 # ---------------------------------------------------------------------------
-
-import os
-import sys
-from pathlib import Path
-
-import yaml
-from pydantic import Field, field_validator
 
 MCP_DEFAULT_CONFIG_PATH = "~/.clyro/mcp-wrapper/mcp-config.yaml"
 

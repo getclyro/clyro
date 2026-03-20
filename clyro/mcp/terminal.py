@@ -27,7 +27,6 @@ import os
 import sys
 from typing import Any
 
-import clyro
 from clyro.constants import APP_URL, ISSUE_TRACKER_URL
 
 _ISSUE_TRACKER = ISSUE_TRACKER_URL

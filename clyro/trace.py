@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_serializer
 logger = structlog.get_logger(__name__)
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Types of trace events that can be captured."""
 
     SESSION_START = "session_start"
@@ -43,7 +43,7 @@ class EventType(str, Enum):
     STEP = "step"
 
 
-class Framework(str, Enum):
+class Framework(StrEnum):
     """Supported agent frameworks."""
 
     LANGGRAPH = "langgraph"
@@ -54,7 +54,7 @@ class Framework(str, Enum):
     ANTHROPIC = "anthropic"  # Anthropic SDK adapter (FRD-001–FRD-012)
 
 
-class AgentStage(str, Enum):
+class AgentStage(StrEnum):
     """
     Agent execution stage for Think/Act/Observe visualization (TDD v1.4).
 

@@ -32,13 +32,13 @@ from tenacity import (
 
 from clyro.exceptions import TransportError
 from clyro.storage.sqlite import LocalStorage
+from clyro.trace import TraceEvent
 from clyro.workers.sync_worker import (
     CircuitBreakerConfig,
     ConnectivityStatus,
     EventSender,
     SyncWorker,
 )
-from clyro.trace import TraceEvent
 
 if TYPE_CHECKING:
     from clyro.config import ClyroConfig

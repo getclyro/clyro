@@ -15,6 +15,7 @@ overhead when only the SDK core is needed.
 
 __version__ = "0.2.0"
 
+from clyro.adapters.claude_agent_sdk import instrument_claude_agent
 from clyro.config import ClyroConfig, ExecutionControls
 from clyro.exceptions import (
     AuthenticationError,
@@ -34,7 +35,6 @@ from clyro.model_selector import COST_OPTIMIZATION_GUIDE, ModelSelector
 from clyro.policy import ConsoleApprovalHandler
 from clyro.session import Session
 from clyro.trace import AgentStage, EventType, Framework, TraceEvent
-from clyro.adapters.claude_agent_sdk import instrument_claude_agent
 from clyro.wrapper import WrappedAgent, configure, wrap
 
 __all__ = [

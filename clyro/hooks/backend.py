@@ -26,25 +26,28 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
 
-from clyro.config import DEFAULT_API_URL
 from clyro.backend.agent_registrar import (
     _extract_org_id_from_api_key,
     _generate_deterministic_agent_id,
-    _sanitize_agent_name,
 )
 from clyro.backend.circuit_breaker import (
     check_can_execute as circuit_can_execute,
+)
+from clyro.backend.circuit_breaker import (
     record_failure as circuit_record_failure,
+)
+from clyro.backend.circuit_breaker import (
     record_success as circuit_record_success,
 )
 from clyro.backend.http_client import AuthenticationError, HttpSyncClient
+from clyro.config import DEFAULT_API_URL
 
 from .constants import (
     AGENT_FRAMEWORK,
@@ -53,7 +56,6 @@ from .constants import (
     DEFAULT_AGENT_NAME,
     DIR_PERMISSIONS,
     EVENT_QUEUE_DIR,
-    EVENT_QUEUE_MAX_MB,
     FILE_PERMISSIONS,
     MEMORY_FALLBACK_MAX_EVENTS,
     OUTPUT_TRUNCATE_BYTES,
@@ -251,7 +253,7 @@ def load_queued_events(session_id: str) -> list[dict[str, Any]]:
     events = []
     if path.exists():
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -353,7 +355,7 @@ def create_trace_event(
         "agent_stage": _derive_agent_stage(event_type),
         "framework": AGENT_FRAMEWORK,
         "framework_version": __version__,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "duration_ms": duration_ms,
         "input_data": input_data,
         "output_data": output_data,
@@ -472,7 +474,7 @@ def report_violation(
         "decision": "block",
         "message": reason,
         "step_number": step_number,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     if violation_details:

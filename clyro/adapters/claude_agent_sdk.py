@@ -631,7 +631,7 @@ class ClaudeAgentHandler:
                         self._loop_detector = LoopDetector(
                             threshold=self._config.controls.loop_detection_threshold,
                         )
-                    result = self._loop_detector.check(
+                    self._loop_detector.check(
                         state=state_for_hash,
                         state_hash=state_hash,
                         action=tool_name,
