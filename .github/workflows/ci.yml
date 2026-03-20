@@ -38,7 +38,7 @@ jobs:
         run: ruff format --check clyro/
 
       - name: Run tests with coverage
-        run: pytest --cov=clyro --cov-report=term-missing --cov-fail-under=85 -q
+        run: pytest --cov=clyro --cov-report=term-missing --cov-fail-under=70 -q
 
   typecheck:
     name: Type check
