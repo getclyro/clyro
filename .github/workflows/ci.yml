@@ -1,6 +1,7 @@
 # Run tests and linting on every push/PR
 name: CI
 
+
 on:
   push:
     branches: [main]
