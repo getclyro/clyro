@@ -48,7 +48,6 @@ def _get_version() -> str:
     """Get SDK version lazily to avoid circular import."""
     import clyro
     return getattr(clyro, "__version__", "0.0.0")
-    from clyro.otlp_exporter import OTLPExporter
 
 logger = structlog.get_logger(__name__)
 
