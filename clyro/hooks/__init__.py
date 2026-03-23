@@ -10,4 +10,4 @@ Reuses the Prevention Stack from clyro.mcp (loop detection, step limits,
 cost budgets, policy rules) adapted for the hook lifecycle.
 """
 
-__version__ = "0.2.3"
+from clyro import __version__  # noqa: F401 — single source: clyro/__init__.py

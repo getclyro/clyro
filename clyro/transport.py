@@ -42,6 +42,12 @@ from clyro.workers.sync_worker import (
 
 if TYPE_CHECKING:
     from clyro.config import ClyroConfig
+
+
+def _get_version() -> str:
+    """Get SDK version lazily to avoid circular import."""
+    import clyro
+    return getattr(clyro, "__version__", "0.0.0")
     from clyro.otlp_exporter import OTLPExporter
 
 logger = structlog.get_logger(__name__)
@@ -217,7 +223,7 @@ class Transport:
         """Get or create HTTP client."""
         if self._client is None or self._client.is_closed:
             headers = {
-                "User-Agent": "clyro-sdk/0.2.3",
+                "User-Agent": f"clyro-sdk/{_get_version()}",
                 "Content-Type": "application/json",
             }
             if self.config.api_key:

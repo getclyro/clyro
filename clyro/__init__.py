@@ -13,7 +13,7 @@ and Claude Code hooks subpackages are lazily loaded to avoid import
 overhead when only the SDK core is needed.
 """
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 from clyro.adapters.claude_agent_sdk import instrument_claude_agent
 from clyro.config import ClyroConfig, ExecutionControls
