@@ -38,6 +38,8 @@ from clyro.exceptions import (
 )
 from clyro.local_logger import LocalTerminalLogger
 from clyro.local_policy import SDKLocalPolicyEvaluator
+from clyro.quota_prompt import QuotaPromptManager
+from clyro.telemetry_client import submit_telemetry
 from clyro.policy import ApprovalHandler, PolicyEvaluator
 from clyro.session import Session, get_current_session, set_current_session
 from clyro.trace import Framework, TraceEvent
@@ -312,6 +314,9 @@ class WrappedAgent(Generic[T]):
 
         # Implements FRD-SOF-004, FRD-SOF-005: transport gating by mode
         self._local_logger: LocalTerminalLogger | None = None
+
+        # Implements FRD-CT-004, FRD-CT-005, FRD-CT-006: quota upgrade prompts
+        self._quota_prompt = QuotaPromptManager(self._config)
 
         if self._config.mode == "local":
             # LOCAL PATH: no transport, no cloud policy evaluator (FRD-SOF-005)
@@ -604,6 +609,12 @@ class WrappedAgent(Generic[T]):
         if start_event is not None:
             self._buffer_event_sync(start_event)
 
+        # Implements FRD-CT-004, FRD-CT-005: quota upgrade prompts at session start
+        try:
+            self._quota_prompt.check()
+        except Exception:
+            pass  # Fail-open: quota check must never crash user code
+
         result: T
         error: Exception | None = None
         start_time = time.perf_counter()
@@ -770,6 +781,12 @@ class WrappedAgent(Generic[T]):
                 except Exception:
                     pass  # Fail-open
 
+            # Implements FRD-CT-008: telemetry submission at session end
+            try:
+                submit_telemetry(self._config, session)
+            except Exception:
+                pass  # Fail-open: telemetry must never crash user code
+
     async def _run_async_with_tracing(
         self,
         session: Session,
@@ -803,6 +820,12 @@ class WrappedAgent(Generic[T]):
         start_event = session.start(input_data=input_data)
         if start_event is not None:
             await self._buffer_event_async(start_event)
+
+        # Implements FRD-CT-004, FRD-CT-005: quota upgrade prompts at session start
+        try:
+            self._quota_prompt.check()
+        except Exception:
+            pass  # Fail-open: quota check must never crash user code
 
         result: T
         error: Exception | None = None
@@ -971,6 +994,12 @@ class WrappedAgent(Generic[T]):
                     self._local_logger.print_session_summary(session)
                 except Exception:
                     pass  # Fail-open
+
+            # Implements FRD-CT-008: telemetry submission at session end
+            try:
+                submit_telemetry(self._config, session)
+            except Exception:
+                pass  # Fail-open: telemetry must never crash user code
 
     def _cleanup_session_sync(self, session: Session) -> None:
         """
