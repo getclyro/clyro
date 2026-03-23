@@ -224,11 +224,11 @@ def _status_internal() -> int:
 
     if local_stats is None:
         # FRD-CT-001 failure: SQLite unavailable
-        _print_stderr(f" Local data unavailable \u2014 run a session first")
+        _print_stderr(" Local data unavailable \u2014 run a session first")
     elif local_stats["session_count"] == 0:
         # FRD-CT-001: zero sessions
-        _print_stderr(f" Sessions:  0")
-        _print_stderr(f" No sessions recorded yet")
+        _print_stderr(" Sessions:  0")
+        _print_stderr(" No sessions recorded yet")
     else:
         _print_stderr(f" Sessions:  {local_stats['session_count']}")
         if local_stats.get("last_session"):
@@ -270,14 +270,14 @@ def _status_internal() -> int:
             if tier == "free":
                 _print_stderr(bar)
                 # TODO(billing): Update to Stripe Checkout URL when billing integration ships
-                _print_stderr(f" Upgrade for 10x capacity \u2192 https://clyrohq.com/pricing")
+                _print_stderr(" Upgrade for 10x capacity \u2192 https://clyrohq.com/pricing")
         else:
-            _print_stderr(f" Cloud unreachable \u2014 showing local data only")
+            _print_stderr(" Cloud unreachable \u2014 showing local data only")
 
     # Local mode CTA
     if mode == "local":
         _print_stderr(bar)
-        _print_stderr(f" Connect to cloud for team dashboard \u2192 set CLYRO_API_KEY")
+        _print_stderr(" Connect to cloud for team dashboard \u2192 set CLYRO_API_KEY")
 
     _print_stderr(bar)
     return 0
