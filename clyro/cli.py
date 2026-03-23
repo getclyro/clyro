@@ -248,8 +248,7 @@ def _status_internal() -> int:
                 f"({usage.get('traces_percentage', 0)}%)"
             )
             _print_stderr(
-                f" Agents:    {usage.get('agents_count', 0)} / "
-                f"{usage.get('agents_limit', 0)}"
+                f" Agents:    {usage.get('agents_count', 0)} / {usage.get('agents_limit', 0)}"
             )
             _print_stderr(
                 f" Storage:   {usage.get('storage_mb', 0)} MB / "
@@ -307,27 +306,22 @@ def _read_local_stats() -> dict[str, Any] | None:
 
         with storage._get_connection() as conn:
             # Session count from sync_status
-            cursor = conn.execute(
-                "SELECT COUNT(DISTINCT session_id) FROM sync_status"
-            )
+            cursor = conn.execute("SELECT COUNT(DISTINCT session_id) FROM sync_status")
             session_count = cursor.fetchone()[0] or 0
 
             # Last session timestamp from trace_buffer
-            cursor = conn.execute(
-                "SELECT MAX(timestamp) FROM trace_buffer"
-            )
+            cursor = conn.execute("SELECT MAX(timestamp) FROM trace_buffer")
             row = cursor.fetchone()
             last_session = row[0] if row and row[0] else None
 
             # Detect adapter from last session payload
             adapter = "unknown"
-            cursor = conn.execute(
-                "SELECT payload FROM trace_buffer ORDER BY id DESC LIMIT 1"
-            )
+            cursor = conn.execute("SELECT payload FROM trace_buffer ORDER BY id DESC LIMIT 1")
             row = cursor.fetchone()
             if row and row[0]:
                 try:
                     import json
+
                     payload = json.loads(row[0])
                     adapter = payload.get("framework", "unknown")
                 except Exception:

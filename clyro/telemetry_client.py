@@ -113,9 +113,7 @@ def _get_counts_from_sqlite(config: ClyroConfig) -> tuple[int, int]:
 
         storage = LocalStorage(config)
         with storage._get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT COUNT(DISTINCT session_id) FROM sync_status"
-            )
+            cursor = conn.execute("SELECT COUNT(DISTINCT session_id) FROM sync_status")
             session_count = cursor.fetchone()[0] or 0
 
             cursor = conn.execute(
