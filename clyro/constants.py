@@ -7,14 +7,15 @@
 # Update these when domains change.
 
 # API
-DEFAULT_API_URL = "https://api.clyrohq.com"
+DEFAULT_API_URL = "https://api.clyro.dev"
 
 # App portal
-APP_URL = "https://clyrohq.com"
+APP_URL = "https://clyro.dev"
 APP_POLICIES_URL = f"{APP_URL}/policies"
+APP_PRICING_URL = f"{APP_URL}/pricing"
 
 # Documentation
-DOCS_URL = "https://docs.clyrohq.com"
+DOCS_URL = "https://docs.clyro.dev"
 DOCS_HOOKS_URL = f"{DOCS_URL}/hooks"
 DOCS_POLICIES_URL = f"{DOCS_URL}/policies"
 

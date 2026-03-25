@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from clyro.constants import DEFAULT_API_URL
+from clyro.constants import APP_PRICING_URL, DEFAULT_API_URL
 from clyro.local_logger import _is_quiet
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 
 # Upgrade URL (TDD §4.2)
 # TODO(billing): Update to Stripe Checkout URL when billing integration ships
-_UPGRADE_URL = "https://clyrohq.com/pricing"
+_UPGRADE_URL = APP_PRICING_URL
 
 # Threshold percentages (FRD-CT-004, FRD-CT-005)
 _WARNING_THRESHOLD = 80

@@ -204,8 +204,8 @@ pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
 
 | Transport | Endpoint | Auth header |
 |---|---|---|
-| HTTP (recommended) | `POST https://api.clyrohq.com/v1/traces/otlp` | `X-Clyro-API-Key: <key>` |
-| gRPC | `api.clyrohq.com:4317` | `api-key: <key>` metadata |
+| HTTP (recommended) | `POST https://api.clyro.dev/v1/traces/otlp` | `X-Clyro-API-Key: <key>` |
+| gRPC | `api.clyro.dev:4317` | `api-key: <key>` metadata |
 
 Supported content types (HTTP): `application/x-protobuf` (default) and `application/json`.
 Supported compression: `gzip` via `Content-Encoding: gzip`.
@@ -232,7 +232,7 @@ provider = TracerProvider(resource=resource)
 provider.add_span_processor(
     BatchSpanProcessor(
         OTLPSpanExporter(
-            endpoint="https://api.clyrohq.com/v1/traces/otlp",
+            endpoint="https://api.clyro.dev/v1/traces/otlp",
             headers={"X-Clyro-API-Key": os.environ.get("CLYRO_API_KEY")},
         )
     )
@@ -267,7 +267,7 @@ provider = TracerProvider(resource=resource)
 provider.add_span_processor(
     BatchSpanProcessor(
         OTLPSpanExporter(
-            endpoint="https://api.clyrohq.com/v1/traces/otlp",
+            endpoint="https://api.clyro.dev/v1/traces/otlp",
             headers={"X-Clyro-API-Key": os.environ.get("CLYRO_API_KEY")},
         )
     )
@@ -307,7 +307,7 @@ provider = TracerProvider(resource=resource)
 provider.add_span_processor(
     BatchSpanProcessor(
         OTLPSpanExporter(
-            endpoint="https://api.clyrohq.com/v1/traces/otlp",
+            endpoint="https://api.clyro.dev/v1/traces/otlp",
             headers={"X-Clyro-API-Key": os.environ.get("CLYRO_API_KEY")},
         )
     )
@@ -357,7 +357,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 import grpc
 
 exporter = OTLPSpanExporter(
-    endpoint="api.clyrohq.com:4317",
+    endpoint="api.clyro.dev:4317",
     credentials=grpc.ssl_channel_credentials(),
     metadata=[("api-key", os.environ.get("CLYRO_API_KEY"))],
 )

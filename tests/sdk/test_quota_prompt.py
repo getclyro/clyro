@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from clyro.constants import APP_PRICING_URL
 from clyro.quota_prompt import QuotaPromptManager, _format_count
 
 
@@ -90,7 +91,7 @@ class TestWarningThreshold:
 
         captured = capsys.readouterr()
         assert "80K/100K" in captured.err
-        assert "clyrohq.com/pricing" in captured.err
+        assert APP_PRICING_URL in captured.err
 
     def test_warning_at_agents_8_of_10(self, cloud_config, capsys):
         """Show warning when agents at 80% (8/10) — running total, not monthly."""

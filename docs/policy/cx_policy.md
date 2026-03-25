@@ -22,7 +22,7 @@ List all CX templates via the policy templates API:
 
 ```bash
 curl -H "Authorization: Bearer <JWT_TOKEN>" \
-     https://api.clyrohq.com/v1/policy-templates
+     https://api.clyro.dev/v1/policy-templates
 ```
 
 Response includes CX templates (prefixed `cx_`) and bundle kits:
@@ -72,7 +72,7 @@ Create a policy from a template and assign it to your agent:
 curl -X POST \
   -H "Authorization: Bearer <JWT_TOKEN>" \
   -H "Content-Type: application/json" \
-  https://api.clyrohq.com/v1/policies \
+  https://api.clyro.dev/v1/policies \
   -d '{
     "name": "refund_threshold_guard",
     "description": "Block refunds over $200",
@@ -100,7 +100,7 @@ curl -X POST \
 curl -X POST \
   -H "Authorization: Bearer <JWT_TOKEN>" \
   -H "Content-Type: application/json" \
-  https://api.clyrohq.com/v1/agents/<AGENT_ID>/policy-assignments \
+  https://api.clyro.dev/v1/agents/<AGENT_ID>/policy-assignments \
   -d '{"policy_id": "<POLICY_ID>"}'
 ```
 
@@ -117,7 +117,7 @@ After creating a policy from a template, update the threshold.
 curl -X PUT \
   -H "Authorization: Bearer <JWT_TOKEN>" \
   -H "Content-Type: application/json" \
-  https://api.clyrohq.com/v1/policies/<POLICY_ID> \
+  https://api.clyro.dev/v1/policies/<POLICY_ID> \
   -d '{
     "rules": {
       "version": "1.0",
@@ -245,7 +245,7 @@ Each platform requires a signing secret for HMAC-SHA256 verification. Set these 
 2. Click **Create webhook**
 3. Configure:
    - **Name:** Clyro Policy Monitor
-   - **Endpoint URL:** `https://api.clyrohq.com/v1/webhooks/cx`
+   - **Endpoint URL:** `https://api.clyro.dev/v1/webhooks/cx`
    - **Request method:** POST
    - **Request format:** JSON
    - **Authentication:** None (Clyro uses its own API key header)
@@ -281,7 +281,7 @@ The `X-Webhook-Signature` header is automatically added by Zendesk.
 
 1. Go to **Intercom Developer Hub** → **Webhooks**
 2. Add a webhook subscription:
-   - **URL:** `https://api.clyrohq.com/v1/webhooks/cx`
+   - **URL:** `https://api.clyro.dev/v1/webhooks/cx`
    - **Topics:** `conversation.admin.replied`
 
 #### Add Custom Headers
@@ -316,7 +316,7 @@ BODY='{"event_type":"messaging.agent_reply","conversation":{"id":"12345"},"messa
 SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')
 
 # Send test webhook
-curl -X POST https://api.clyrohq.com/v1/webhooks/cx \
+curl -X POST https://api.clyro.dev/v1/webhooks/cx \
   -H "Content-Type: application/json" \
   -H "X-Clyro-API-Key: $CLYRO_API_KEY" \
   -H "X-Platform: zendesk" \

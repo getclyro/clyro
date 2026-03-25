@@ -6,7 +6,7 @@ If you discover a security vulnerability in the Clyro SDK, please report it resp
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email **security@clyrohq.com** with:
+Instead, please email **security@clyro.dev** with:
 
 - A description of the vulnerability
 - Steps to reproduce or a proof-of-concept

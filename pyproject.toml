@@ -1,12 +1,12 @@
 [project]
 name = "clyro"
-version = "0.2.4"
+version = "0.2.5"
 description = "Runtime governance for AI agents — prevent failures before they happen"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
-    { name = "Clyro Team", email = "engineering@clyrohq.com" }
+    { name = "Clyro Team", email = "engineering@clyro.dev" }
 ]
 keywords = [
     "ai", "agents", "governance", "observability", "guardrails",
@@ -66,8 +66,8 @@ clyro-mcp = "clyro.mcp.cli:main"
 clyro-hook = "clyro.hooks.cli:main"
 
 [project.urls]
-Homepage = "https://clyrohq.com"
-Documentation = "https://docs.clyrohq.com"
+Homepage = "https://clyro.dev"
+Documentation = "https://docs.clyro.dev"
 Repository = "https://github.com/getclyro/clyro"
 Issues = "https://github.com/getclyro/clyro/issues"
 
