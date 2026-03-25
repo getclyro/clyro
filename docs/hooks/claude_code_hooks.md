@@ -264,7 +264,7 @@ tools:
 # ── Cloud backend (optional) ─────────────────────────────────────────
 backend:
   api_key: null              # Or set CLYRO_API_KEY env var
-  api_url: "https://api.clyrohq.com"
+  api_url: "https://api.clyro.dev"
   agent_name: "claude-code-session"
   policy_cache_ttl_seconds: 300  # How often to refresh cloud policies
 
@@ -322,7 +322,7 @@ tools:
 | Variable | Description |
 |---|---|
 | `CLYRO_API_KEY` | Clyro API key. Required for cloud tracing and policy sync. |
-| `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyrohq.com` |
+| `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyro.dev` |
 
 Environment variables override values in the config file.
 

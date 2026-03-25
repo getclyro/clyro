@@ -311,7 +311,7 @@ from clyro import ClyroConfig, ExecutionControls
 config = ClyroConfig(
     # Authentication
     api_key=os.environ.get("CLYRO_API_KEY"),           # or use CLYRO_API_KEY env var + from_env()
-    endpoint="https://api.clyrohq.com",  # or set CLYRO_ENDPOINT env var
+    endpoint="https://api.clyro.dev",  # or set CLYRO_ENDPOINT env var
 
     # Agent identification
     agent_name="my-anthropic-agent",  # human-readable name; auto-registers on first run
@@ -348,7 +348,7 @@ config = ClyroConfig(
 | Variable | Config equivalent | Default |
 |---|---|---|
 | `CLYRO_API_KEY` | `api_key` | — |
-| `CLYRO_ENDPOINT` | `endpoint` | `https://api.clyrohq.com` |
+| `CLYRO_ENDPOINT` | `endpoint` | `https://api.clyro.dev` |
 | `CLYRO_AGENT_NAME` | `agent_name` | — |
 | `CLYRO_MAX_STEPS` | `controls.max_steps` | `100` |
 | `CLYRO_MAX_COST_USD` | `controls.max_cost_usd` | `10.0` |

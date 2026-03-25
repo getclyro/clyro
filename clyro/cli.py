@@ -29,7 +29,7 @@ from typing import Any
 
 import clyro
 from clyro.config import DEFAULT_API_URL
-from clyro.constants import GITHUB_NEW_ISSUE_URL
+from clyro.constants import APP_PRICING_URL, GITHUB_NEW_ISSUE_URL
 
 # Maximum URL length for browser-based feedback (TDD §13.4 edge case)
 _MAX_URL_BODY_LENGTH = 2000
@@ -269,7 +269,7 @@ def _status_internal() -> int:
             if tier == "free":
                 _print_stderr(bar)
                 # TODO(billing): Update to Stripe Checkout URL when billing integration ships
-                _print_stderr(" Upgrade for 10x capacity \u2192 https://clyrohq.com/pricing")
+                _print_stderr(f" Upgrade for 10x capacity \u2192 {APP_PRICING_URL}")
         else:
             _print_stderr(" Cloud unreachable \u2014 showing local data only")
 

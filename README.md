@@ -132,7 +132,7 @@ rules:
 ```python
 # Add API key to enable cloud features: dashboards, team policies, session replay
 config = ClyroConfig(
-    api_key=os.environ.get("CLYRO_API_KEY"),  # Get from clyrohq.com
+    api_key=os.environ.get("CLYRO_API_KEY"),  # Get from clyro.dev
     agent_name="my-agent",
     controls=ExecutionControls(max_steps=50, max_cost_usd=2.0),
 )
@@ -144,7 +144,7 @@ config = ClyroConfig(
 
 ```bash
 export CLYRO_API_KEY="your-clyro-api-key"
-export CLYRO_ENDPOINT="https://api.clyrohq.com"
+export CLYRO_ENDPOINT="https://api.clyro.dev"
 export CLYRO_AGENT_NAME="my-agent"
 export CLYRO_MAX_STEPS="50"
 export CLYRO_MAX_COST_USD="10.0"
@@ -165,7 +165,7 @@ from clyro import ClyroConfig, ExecutionControls
 config = ClyroConfig(
     # Authentication
     api_key=os.environ.get("CLYRO_API_KEY"),
-    endpoint="https://api.clyrohq.com",
+    endpoint="https://api.clyro.dev",
 
     # Agent identification
     agent_name="my-production-agent",
@@ -455,7 +455,7 @@ except ClyroError as e:
 
 ### Reference
 
-- [API Reference](https://docs.clyrohq.com/sdk) — Full API documentation
+- [API Reference](https://docs.clyro.dev/sdk) — Full API documentation
 - [CHANGELOG](CHANGELOG.md) — Version history
 - [CONTRIBUTING](CONTRIBUTING.md) — Development setup and guidelines
 
@@ -514,6 +514,6 @@ tests/
 
 ## Support Links
 
-- Documentation: https://docs.clyrohq.com
+- Documentation: https://docs.clyro.dev
 - Issues: https://github.com/getclyro/clyro/issues
 - Community: https://discord.gg/clyro

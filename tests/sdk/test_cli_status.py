@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from clyro.cli import _handle_status, _status_internal, main
+from clyro.constants import APP_PRICING_URL
 
 
 # =============================================================================
@@ -177,7 +178,7 @@ class TestStatusCloudMode:
             assert exc_info.value.code == 0
 
         captured = capsys.readouterr()
-        assert "clyrohq.com/pricing" in captured.err
+        assert APP_PRICING_URL in captured.err
 
 
 # =============================================================================

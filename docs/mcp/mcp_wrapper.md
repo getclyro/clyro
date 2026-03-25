@@ -282,7 +282,7 @@ Arguments:
 | Variable | Description |
 |---|---|
 | `CLYRO_API_KEY` | Clyro API key. Required for cloud tracing and policy sync. |
-| `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyrohq.com` |
+| `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyro.dev` |
 
 Without `CLYRO_API_KEY` the wrapper runs in local-only mode: governance still applies, audit logs are written locally, but no data is sent to Clyro.
 
@@ -383,7 +383,7 @@ tools: {}          # Per-tool policy overrides (empty = no per-tool rules)
 backend:
   agent_name: "my-agent"          # Name shown in the Clyro dashboard
   api_key: "your-clyro-api-key"         # Clyro API key (overrides CLYRO_API_KEY env var)
-  api_url: "https://api.clyrohq.com" # Clyro backend URL (overrides CLYRO_API_URL env var)
+  api_url: "https://api.clyro.dev" # Clyro backend URL (overrides CLYRO_API_URL env var)
 
 audit:
   log_path: "/path/to/audit.jsonl"
