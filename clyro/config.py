@@ -13,6 +13,7 @@ validation, defaults, and type safety.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from decimal import Decimal
@@ -25,6 +26,56 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from clyro.constants import DEFAULT_API_URL
 from clyro.exceptions import ClyroConfigError
+
+# ---------------------------------------------------------------------------
+# Shared structlog configuration — runs at import time so every module
+# (adapters, wrapper, MCP, hooks) that does `structlog.get_logger()` gets
+# stderr-only output with level filtering via CLYRO_LOG_LEVEL (default INFO).
+# ---------------------------------------------------------------------------
+
+
+def _get_log_level() -> int:
+    """Resolve minimum log level from CLYRO_LOG_LEVEL env var (default INFO)."""
+    name = os.environ.get("CLYRO_LOG_LEVEL", "INFO").upper()
+    return getattr(logging, name, logging.INFO)
+
+
+def _level_filter(
+    logger: structlog.types.WrappedLogger,
+    method_name: str,
+    event_dict: structlog.types.EventDict,
+) -> structlog.types.EventDict:
+    """Drop events below the configured minimum level."""
+    level = getattr(logging, event_dict.get("level", "debug").upper(), logging.DEBUG)
+    if level < _get_log_level():
+        raise structlog.DropEvent
+    return event_dict
+
+
+class _StderrLoggerFactory:
+    """Logger factory that resolves ``sys.stderr`` at write time.
+
+    Creates a new ``PrintLogger`` on each call so it always uses the
+    *current* ``sys.stderr`` — important for pytest's capsys/capfd
+    which monkeypatch ``sys.stderr`` after import.
+    """
+
+    def __call__(self, *args: object, **kwargs: object) -> structlog.PrintLogger:
+        return structlog.PrintLogger(file=sys.stderr)
+
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        _level_filter,
+        structlog.processors.StackInfoRenderer(),
+        structlog.dev.set_exc_info,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    logger_factory=_StderrLoggerFactory(),
+)
 
 logger = structlog.get_logger(__name__)
 
