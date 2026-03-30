@@ -169,6 +169,7 @@ async def _init_backend(config, session, server_command):
     # 2a. Agent registration (FRD-016)
     registrar = AgentRegistrar(instance_id=instance_id, http_client=http_client, api_key=api_key)
     session.agent_id = await registrar.get_or_register(agent_name)
+    session.agent_name = agent_name
 
     # 2b. Cloud policy fetch + merge (FRD-017)
     fetcher = CloudPolicyFetcher(http_client=http_client)
