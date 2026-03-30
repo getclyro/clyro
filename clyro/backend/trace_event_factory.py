@@ -127,7 +127,10 @@ class TraceEventFactory:
 
     def session_start(self) -> dict[str, Any]:
         """Create a session_start trace event."""
-        return self.create_trace_event("session_start", None)
+        metadata = {}
+        if self._session.agent_name:
+            metadata["agent_name"] = self._session.agent_name
+        return self.create_trace_event("session_start", None, metadata=metadata or None)
 
     def session_end(self, total_duration_ms: int = 0) -> dict[str, Any]:
         """Create a session_end trace event."""

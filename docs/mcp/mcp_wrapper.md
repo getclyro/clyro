@@ -18,13 +18,32 @@ pip install clyro
 
 This installs the unified Clyro SDK which includes the `clyro-mcp` CLI command.
 
-**For local development** (editable install from source):
+Requires Python ≥ 3.11.
+
+### Finding the full path to `clyro-mcp`
+
+GUI applications (VS Code, Claude Desktop, Cursor) do **not** load your shell profile (`~/.bashrc`, `~/.zshrc`), so they cannot resolve `clyro-mcp` by name. You must use the **full path** to the executable in their configs.
+
+Find the full path after installation:
 
 ```bash
-pip install -e /path/to/clyro/code/backend/sdk
+which clyro-mcp
 ```
 
-Requires Python ≥ 3.11.
+Common locations depending on how you installed:
+
+| Install method | Typical path |
+|---|---|
+| System pip | `/usr/local/bin/clyro-mcp` |
+| User pip (`--user`) | `~/.local/bin/clyro-mcp` |
+| virtualenv / venv | `/path/to/venv/bin/clyro-mcp` |
+| conda env | `~/miniconda3/envs/<env>/bin/clyro-mcp` |
+| Editable install | Same as the venv/conda env it was installed into |
+
+> **Tip:** If you want to use the bare `clyro-mcp` command in GUI apps, create a symlink in a directory that is on the system-wide PATH (e.g., `/usr/local/bin`):
+> ```bash
+> sudo ln -s $(which clyro-mcp) /usr/local/bin/clyro-mcp
+> ```
 
 ---
 
@@ -69,7 +88,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "filesystem": {
-      "command": "clyro-mcp",
+      "command": "/path/to/venv/bin/clyro-mcp",
       "args": ["wrap", "npx", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
       "env": {
         "CLYRO_API_KEY": "your-clyro-api-key"
@@ -78,6 +97,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   }
 }
 ```
+
+> **Important:** Replace `/path/to/venv/bin/clyro-mcp` with the actual path from `which clyro-mcp`. GUI apps like Claude Desktop do not load shell profiles, so the bare `clyro-mcp` command will not be found.
 
 ### Cursor
 
@@ -100,7 +121,7 @@ Edit `.cursor/mcp.json` in your project or `~/.cursor/mcp.json` globally:
 {
   "mcpServers": {
     "my-server": {
-      "command": "clyro-mcp",
+      "command": "/path/to/venv/bin/clyro-mcp",
       "args": ["wrap", "python", "-m", "my_mcp_server"],
       "env": {
         "CLYRO_API_KEY": "your-clyro-api-key"
@@ -109,6 +130,8 @@ Edit `.cursor/mcp.json` in your project or `~/.cursor/mcp.json` globally:
   }
 }
 ```
+
+> **Important:** Replace `/path/to/venv/bin/clyro-mcp` with the actual path from `which clyro-mcp`. Cursor does not load shell profiles.
 
 ### VS Code (Claude Code)
 
@@ -134,7 +157,7 @@ Edit `~/.claude.json` to add or wrap MCP servers globally:
   "mcpServers": {
     "my-server": {
       "type": "stdio",
-      "command": "clyro-mcp",
+      "command": "/path/to/venv/bin/clyro-mcp",
       "args": [
         "wrap",
         "--config", "/path/to/my_governance.yaml",
@@ -146,11 +169,15 @@ Edit `~/.claude.json` to add or wrap MCP servers globally:
 }
 ```
 
+> **Important:** Replace `/path/to/venv/bin/clyro-mcp` with the actual path from `which clyro-mcp`. VS Code extensions do not load shell profiles (`~/.bashrc`, `~/.zshrc`), so the bare `clyro-mcp` command will not be found.
+
 The `--config` flag points to a YAML file where you define governance policies, backend settings (`agent_name`, `api_key`, `api_url`), and audit options. See the [Configuration with `--config`](#configuration-with---config) section below.
 
 ### Custom Python MCP servers
 
 If you built your own MCP server in Python, the wrapper works the same way — just change the launch command in your host config.
+
+> **Note:** The examples below use the bare `clyro-mcp` command, which works in terminal sessions. If you're using these snippets in a GUI app config (VS Code, Claude Desktop, Cursor), replace `clyro-mcp` with the full path (see [Finding the full path](#finding-the-full-path-to-clyro-mcp)).
 
 **Using `python -m`:**
 
@@ -241,7 +268,7 @@ After:
 
 The wrapper passes the working directory and all environment variables through to the child process unchanged, so your server sees the same environment it would see when launched directly.
 
-> **Note:** `clyro-mcp` must be on the same `PATH` or virtualenv as where you run your host. If you install it into a specific venv, use the full path: `/path/to/venv/bin/clyro-mcp wrap ...`
+> **Note:** GUI applications (VS Code, Claude Desktop, Cursor) do not load shell profiles, so always use the full path to `clyro-mcp` in their configs. The bare `clyro-mcp` command works in terminal sessions where your shell profile is loaded. See [Finding the full path to `clyro-mcp`](#finding-the-full-path-to-clyro-mcp) above.
 
 ### Any other MCP host
 
@@ -411,7 +438,7 @@ Config values are resolved in this order (first wins):
   "mcpServers": {
     "my-governed-server": {
       "type": "stdio",
-      "command": "clyro-mcp",
+      "command": "/path/to/venv/bin/clyro-mcp",
       "args": [
         "wrap",
         "--config", "/home/user/configs/my_governance.yaml",
@@ -474,7 +501,7 @@ client = MultiServerMCPClient(
 client = MultiServerMCPClient(
     {
         "my-server": {
-            "command": "/path/to/venv/bin/clyro-mcp",
+            "command": "clyro-mcp",
             "args": [
                 "wrap",
                 "--config", "/path/to/my_governance.yaml",
@@ -503,7 +530,7 @@ SERVER_NAME = "my-server"
 client = MultiServerMCPClient(
     {
         SERVER_NAME: {
-            "command": "/path/to/venv/bin/clyro-mcp",
+            "command": "clyro-mcp",
             "args": [
                 "wrap",
                 "--config", "/path/to/my_governance.yaml",
@@ -600,3 +627,15 @@ Each line is a JSON event. The log is created with `0600` permissions (owner-rea
 ## Failure behavior
 
 The wrapper is fail-open. If Clyro's backend is unreachable, tool calls are not blocked — they proceed normally. Events are queued to disk and retried on the next sync interval. Local audit logging continues regardless of backend status.
+
+---
+
+## Troubleshooting
+
+### `clyro-mcp: command not found` / `Executable not found in $PATH`
+
+GUI applications (VS Code, Claude Desktop, Cursor) launch processes **without** loading your shell profile (`~/.bashrc`, `~/.zshrc`). Even if `clyro-mcp` works in your terminal, these apps won't find it.
+
+**Fix:** Use the full path to `clyro-mcp` in the app's MCP config. Run `which clyro-mcp` in a terminal where it works to find the path, then replace `"command": "clyro-mcp"` with `"command": "/full/path/to/clyro-mcp"` in the config.
+
+See [Finding the full path to `clyro-mcp`](#finding-the-full-path-to-clyro-mcp) for details.

@@ -30,6 +30,7 @@ class McpSession:
     step_count: int = 0
     accumulated_cost_usd: float = 0.0
     agent_id: UUID | None = None  # FRD-016: set by AgentRegistrar on backend-enabled sessions
+    agent_name: str | None = None  # FRD-016: set during backend init for trace metadata
 
     def increment_step(self) -> int:
         """Increment and return the new step count."""

@@ -26,13 +26,31 @@ pip install clyro
 
 This installs the unified Clyro SDK which includes the `clyro-hook` CLI command.
 
-**For local development** (editable install from source):
+Requires Python ≥ 3.11.
+
+### Finding the full path to `clyro-hook`
+
+Claude Code hooks run as subprocesses that do **not** load your shell profile (`~/.bashrc`, `~/.zshrc`), so they cannot resolve `clyro-hook` by name. You must use the **full path** to the executable in your hooks config.
+
+Find the full path after installation:
 
 ```bash
-pip install -e /path/to/clyro/code/backend/sdk
+which clyro-hook
 ```
 
-Requires Python ≥ 3.11.
+Common locations depending on how you installed:
+
+| Install method | Typical path |
+|---|---|
+| System pip | `/usr/local/bin/clyro-hook` |
+| User pip (`--user`) | `~/.local/bin/clyro-hook` |
+| virtualenv / venv | `/path/to/venv/bin/clyro-hook` |
+| conda env | `~/miniconda3/envs/<env>/bin/clyro-hook` |
+
+> **Tip:** If you want to use the bare `clyro-hook` command, create a symlink in a directory that is on the system-wide PATH (e.g., `/usr/local/bin`):
+> ```bash
+> sudo ln -s $(which clyro-hook) /usr/local/bin/clyro-hook
+> ```
 
 ---
 
