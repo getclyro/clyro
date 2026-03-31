@@ -332,16 +332,22 @@ async def _async_main(
             },
         )
         _delete_marker(marker)
+        # Flush backend sync after session_end is enqueued (FRD-015)
+        sync_ok: bool | None = None
+        if sync_manager is not None:
+            try:
+                await sync_manager.shutdown()
+                sync_ok = sync_manager._event_queue.pending_count == 0
+            except Exception:
+                sync_ok = False
         # Print governance summary to stderr (respects CLYRO_QUIET)
         terminal.print_session_summary(
             steps=session.step_count,
             cost_usd=session.accumulated_cost_usd,
             violations=audit.get_violations(),
             controls_triggered=audit.get_controls_triggered(),
+            sync_ok=sync_ok,
         )
-        # Flush backend sync after session_end is enqueued (FRD-015)
-        if sync_manager is not None:
-            await sync_manager.shutdown()
         if http_client is not None:
             await http_client.close()
         audit.close()
