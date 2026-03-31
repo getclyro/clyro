@@ -89,6 +89,7 @@ class McpTerminalLogger:
         cost_usd: float,
         violations: list[dict[str, Any]] | None = None,
         controls_triggered: list[str] | None = None,
+        sync_ok: bool | None = None,
     ) -> None:
         """Print a governance summary to stderr after session ends.
 
@@ -138,6 +139,8 @@ class McpTerminalLogger:
             if mode == "local":
                 write_stderr(f" View full replay \u2192 {APP_URL}")
                 write_stderr(" Connect: set CLYRO_API_KEY to enable cloud")
+            elif sync_ok is False:
+                write_stderr(" Trace sync failed \u2014 events persisted for retry")
             else:
                 write_stderr(f" Traces synced to cloud \u2192 {APP_URL}")
 

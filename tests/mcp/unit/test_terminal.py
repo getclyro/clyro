@@ -94,7 +94,30 @@ class TestSessionSummary:
         assert "CLYRO_API_KEY" in captured.err  # Cloud CTA
         assert captured.out == ""
 
-    def test_summary_cloud_mode(self, capsys, monkeypatch):
+    def test_summary_cloud_mode_sync_ok(self, capsys, monkeypatch):
+        monkeypatch.delenv("CLYRO_QUIET", raising=False)
+        logger = McpTerminalLogger(is_backend_enabled=True)
+
+        logger.print_session_summary(steps=10, cost_usd=0.05, sync_ok=True)
+
+        captured = capsys.readouterr()
+        assert "Mode:       cloud" in captured.err
+        assert "Traces synced" in captured.err
+        assert "CLYRO_API_KEY" not in captured.err  # No CTA when already cloud
+
+    def test_summary_cloud_mode_sync_failed(self, capsys, monkeypatch):
+        monkeypatch.delenv("CLYRO_QUIET", raising=False)
+        logger = McpTerminalLogger(is_backend_enabled=True)
+
+        logger.print_session_summary(steps=10, cost_usd=0.05, sync_ok=False)
+
+        captured = capsys.readouterr()
+        assert "Mode:       cloud" in captured.err
+        assert "Trace sync failed" in captured.err
+        assert "Traces synced" not in captured.err
+
+    def test_summary_cloud_mode_sync_none(self, capsys, monkeypatch):
+        """When sync_ok is None (no sync_manager), still shows synced."""
         monkeypatch.delenv("CLYRO_QUIET", raising=False)
         logger = McpTerminalLogger(is_backend_enabled=True)
 
@@ -103,7 +126,6 @@ class TestSessionSummary:
         captured = capsys.readouterr()
         assert "Mode:       cloud" in captured.err
         assert "Traces synced" in captured.err
-        assert "CLYRO_API_KEY" not in captured.err  # No CTA when already cloud
 
     def test_summary_with_violations(self, capsys, monkeypatch):
         monkeypatch.delenv("CLYRO_QUIET", raising=False)
