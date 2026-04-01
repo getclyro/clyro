@@ -7,10 +7,7 @@ backend outages and enables fast recovery on reconnection.
 
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
-
-import pytest
 
 from clyro.backend.circuit_breaker import (
     CircuitBreaker,

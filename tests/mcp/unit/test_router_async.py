@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from clyro.mcp.audit import AuditLogger
 from clyro.config import WrapperConfig
+from clyro.mcp.audit import AuditLogger
 from clyro.mcp.prevention import AllowDecision, PreventionStack
 from clyro.mcp.router import MessageRouter, _FramingError
 from clyro.mcp.session import McpSession

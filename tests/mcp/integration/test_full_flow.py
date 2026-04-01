@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from clyro.mcp.audit import AuditLogger
 from clyro.config import WrapperConfig, load_config
+from clyro.mcp.audit import AuditLogger
 from clyro.mcp.errors import format_error
 from clyro.mcp.prevention import AllowDecision, BlockDecision, PreventionStack
 from clyro.mcp.session import McpSession

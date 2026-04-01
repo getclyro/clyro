@@ -24,7 +24,6 @@ from clyro.exceptions import FrameworkVersionError, LoopDetectedError, StepLimit
 from clyro.session import Session
 from clyro.trace import AgentStage, EventType, Framework
 
-
 # =============================================================================
 # Mock LangGraph Module and Classes
 # =============================================================================
@@ -461,6 +460,7 @@ class TestLangGraphCallbackHandler:
     ):
         """Test that on_chain_start tracks node executions when parent_run_id is present."""
         from uuid import uuid4
+
         from clyro.adapters.langgraph import LangGraphAdapter
 
         adapter = LangGraphAdapter(mock_compiled_graph, config)
@@ -489,6 +489,7 @@ class TestLangGraphCallbackHandler:
     ):
         """Test that on_chain_end creates a state transition event for nodes."""
         from uuid import uuid4
+
         from clyro.adapters.langgraph import LangGraphAdapter
 
         adapter = LangGraphAdapter(mock_compiled_graph, config)
@@ -527,6 +528,7 @@ class TestLangGraphCallbackHandler:
     ):
         """Test that on_chain_end captures state snapshot for nodes."""
         from uuid import uuid4
+
         from clyro.adapters.langgraph import LangGraphAdapter
 
         adapter = LangGraphAdapter(mock_compiled_graph, config)
@@ -572,6 +574,7 @@ class TestLangGraphCallbackHandler:
     ):
         """Test that on_chain_error creates an error event for node failures."""
         from uuid import uuid4
+
         from clyro.adapters.langgraph import LangGraphAdapter
 
         adapter = LangGraphAdapter(mock_compiled_graph, config)

@@ -20,13 +20,11 @@ adapter tests.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from decimal import Decimal
 from types import ModuleType
-from typing import Any
 from unittest.mock import MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -40,7 +38,6 @@ from clyro.exceptions import (
     StepLimitExceededError,
 )
 from clyro.trace import AgentStage, EventType, Framework
-
 
 # ---------------------------------------------------------------------------
 # Mock Anthropic SDK classes
@@ -1545,7 +1542,7 @@ class TestErrorHandling:
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
             messages=[{"role": "user", "content": "stream test"}],
-        ) as stream:
+        ):
             pass  # get_final_message will be called in __exit__
 
         # Session should have been created
@@ -1588,7 +1585,7 @@ class TestErrorHandling:
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": "stream test"}],
-            ) as stream:
+            ):
                 raise RuntimeError("Network error")
 
         # Session was created, error event should have been emitted

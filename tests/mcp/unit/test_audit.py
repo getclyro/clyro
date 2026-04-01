@@ -11,8 +11,8 @@ from uuid import uuid4
 
 import pytest
 
-from clyro.mcp.audit import AuditLogger
 from clyro.config import AuditConfig
+from clyro.mcp.audit import AuditLogger
 
 
 def _make_logger(

@@ -4,8 +4,6 @@
 from decimal import Decimal
 from uuid import uuid4
 
-import pytest
-
 from clyro.config import ClyroConfig, ExecutionControls
 from clyro.session import Session
 
@@ -422,7 +420,7 @@ class TestParameterImpactAnalysis:
         output_tokens = [50, 75, 100]  # Simulating verbosity increase
 
         events = []
-        for temp, tokens in zip(temps, output_tokens):
+        for temp, tokens in zip(temps, output_tokens, strict=False):
             event = session.record_llm_call(
                 model="gpt-4-turbo",
                 input_data={"prompt": "Explain AI"},

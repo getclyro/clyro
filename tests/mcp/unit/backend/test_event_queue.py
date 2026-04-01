@@ -6,7 +6,6 @@ FRD-018: File-based JSONL persistence of unsynced trace events.
 
 from __future__ import annotations
 
-import json
 from uuid import uuid4
 
 import pytest
@@ -149,7 +148,7 @@ class TestEventQueueMemoryFallback:
         from unittest.mock import patch
 
         event = _make_event()
-        with patch("builtins.open", side_effect=IOError("disk full")):
+        with patch("builtins.open", side_effect=OSError("disk full")):
             queue.append(event)
 
         # Should be in memory fallback

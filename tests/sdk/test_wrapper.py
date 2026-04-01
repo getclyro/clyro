@@ -5,20 +5,18 @@
 
 import asyncio
 import sys
-import tempfile
-from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+
 from clyro.config import ClyroConfig, ExecutionControls, reset_config
 from clyro.exceptions import (
     ClyroWrapError,
     StepLimitExceededError,
 )
 from clyro.session import Session
-from clyro.storage.sqlite import LocalStorage
 from clyro.trace import Framework
 from clyro.wrapper import WrappedAgent, configure, get_session, wrap
 

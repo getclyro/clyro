@@ -15,7 +15,6 @@ import pytest
 from clyro.config import ClyroConfig
 from clyro.exceptions import ClyroConfigError
 
-
 # =============================================================================
 # §11.7 — Valid HTTPS endpoint (FRD-S001)
 # =============================================================================

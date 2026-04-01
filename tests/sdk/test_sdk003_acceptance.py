@@ -24,29 +24,25 @@ These tests validate the acceptance criteria specified in the ClickUp task:
    And sync status is maintained correctly
 """
 
-import asyncio
 import logging
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 
 from clyro.config import ClyroConfig
-from clyro.storage.sqlite import EventPriority, LocalStorage, StorageHealthStatus
+from clyro.storage.sqlite import LocalStorage, StorageHealthStatus
+from clyro.trace import EventType, TraceEvent, create_session_end_event, create_step_event
+from clyro.transport import Transport
 from clyro.workers.sync_worker import (
     CircuitBreakerConfig,
     CircuitState,
-    ConnectivityStatus,
     SyncWorker,
 )
-from clyro.trace import EventType, TraceEvent, create_session_end_event, create_step_event
-from clyro.transport import Transport
-
 
 # -----------------------------------------------------------------------------
 # Fixtures
@@ -218,7 +214,7 @@ class TestBackendUnavailable:
 
         # Store events and mark ALL as synced so they can be pruned
         synced_ids = []
-        for i in range(30):
+        for _i in range(30):
             event = create_large_event(session_id, size_kb=50)
             event.event_id = uuid4()  # Unique ID
             storage.store_event(event)
@@ -349,13 +345,13 @@ class TestStorageSizeManagement:
 
         # Manually backdate the synced events
         conn = sqlite3.connect(str(storage.db_path))
-        old_date = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        old_date = (datetime.now(UTC) - timedelta(days=10)).isoformat()
         conn.execute("UPDATE trace_buffer SET created_at = ?", (old_date,))
         conn.commit()
         conn.close()
 
         # Store many large events to trigger cleanup
-        for i in range(20):
+        for _i in range(20):
             event = create_large_event(session_id, size_kb=100)
             event.event_id = uuid4()
             storage.store_event(event)

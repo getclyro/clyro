@@ -26,7 +26,6 @@ import pytest
 from clyro.constants import APP_PRICING_URL
 from clyro.quota_prompt import QuotaPromptManager, _format_count
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

@@ -11,7 +11,6 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from clyro.constants import DEFAULT_API_URL
 from clyro.config import (
     DEFAULT_PRICING,
     ClyroConfig,
@@ -20,6 +19,7 @@ from clyro.config import (
     reset_config,
     set_config,
 )
+from clyro.constants import DEFAULT_API_URL
 from clyro.exceptions import ClyroConfigError
 
 

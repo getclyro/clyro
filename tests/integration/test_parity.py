@@ -4,7 +4,6 @@ Verify consolidated modules produce identical results to original
 implementations for identical inputs.
 """
 
-import json
 
 
 class TestCostTrackerParity:
@@ -60,7 +59,7 @@ class TestLocalPolicyEvaluatorParity:
 
     def _make_config(self, rules):
         """Create a minimal config-like object for LocalPolicyEvaluator."""
-        from clyro.config import PolicyRule, ToolConfig, GlobalConfig, WrapperConfig
+        from clyro.config import GlobalConfig, PolicyRule, WrapperConfig
         global_config = GlobalConfig(policies=[PolicyRule(**r) for r in rules])
         return WrapperConfig(global_=global_config)
 

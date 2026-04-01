@@ -11,17 +11,14 @@ Cross-component integration tests:
 
 from __future__ import annotations
 
-import os
 import socket
-import textwrap
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
 
-import clyro
 from clyro.config import ClyroConfig
 from clyro.constants import ISSUE_TRACKER_URL
 from clyro.exceptions import (
@@ -197,7 +194,7 @@ class TestQuietModeIntegration:
 
         captured = capsys.readouterr()
         # Filter out non-clyro output
-        clyro_lines = [l for l in captured.err.splitlines() if "[clyro]" in l or "governance" in l.lower()]
+        clyro_lines = [line for line in captured.err.splitlines() if "[clyro]" in line or "governance" in line.lower()]
         assert len(clyro_lines) == 0, f"Unexpected clyro stderr output: {clyro_lines}"
 
 

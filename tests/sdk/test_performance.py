@@ -7,7 +7,6 @@ Performance tests to validate SDK overhead requirements.
 Target: Execution controls should add <10ms p95 overhead to agent execution.
 """
 
-import statistics
 import time
 from decimal import Decimal
 

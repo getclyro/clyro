@@ -4,11 +4,9 @@
 """Unit tests for trace event models."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC
 from decimal import Decimal
 from uuid import UUID, uuid4
-
-import pytest
 
 from clyro.trace import (
     AgentStage,
@@ -232,7 +230,7 @@ class TestTraceEvent:
         )
 
         assert event.timestamp.tzinfo is not None
-        assert event.timestamp.tzinfo == timezone.utc
+        assert event.timestamp.tzinfo == UTC
 
 
 class TestComputeStateHash:

@@ -14,11 +14,11 @@ import time
 from uuid import uuid4
 
 import pytest
+from conftest import TEST_ORG_ID
 
 from clyro import wrap
 from clyro.config import ClyroConfig, ExecutionControls
 from clyro.session import get_current_session, set_current_session
-from conftest import TEST_ORG_ID
 
 
 class TestConcurrentExecution:
@@ -235,7 +235,6 @@ class TestConcurrentExecution:
         def quick_agent(value: int) -> int:
             return value * 2
 
-        session_ids = []
 
         # Run many quick sequential executions
         for i in range(50):

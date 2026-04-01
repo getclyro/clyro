@@ -13,7 +13,6 @@ Tests cover:
 
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest

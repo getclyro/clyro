@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
 
 import pytest
 import yaml
 
 from clyro.constants import DEFAULT_API_URL
 from clyro.hooks.audit import AuditLogger
-from clyro.hooks.config import HookConfig, load_hook_config
+from clyro.hooks.config import HookConfig
 from clyro.hooks.models import HookInput, SessionState
 
 

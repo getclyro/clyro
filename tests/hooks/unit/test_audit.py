@@ -1,9 +1,6 @@
 """Unit tests for audit logging."""
 
 import json
-from pathlib import Path
-
-import pytest
 
 from clyro.hooks.audit import AuditLogger, redact_params
 

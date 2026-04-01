@@ -6,7 +6,7 @@ FRD-016: Auto-register MCP agent and persist agent_id locally.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest

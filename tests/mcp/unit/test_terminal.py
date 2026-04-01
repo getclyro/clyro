@@ -13,19 +13,16 @@ Coverage targets:
 
 from __future__ import annotations
 
-import io
-import sys
 from unittest.mock import patch
 
 import pytest
 
 from clyro.mcp.terminal import (
-    McpTerminalLogger,
     _ISSUE_TRACKER,
+    McpTerminalLogger,
     is_quiet,
     write_stderr,
 )
-
 
 # ===========================================================================
 # is_quiet()
@@ -225,9 +222,10 @@ class TestErrorContext:
 
 class TestAuditSummaryAccessors:
     def test_violations_tracked_on_block(self, tmp_path):
+        from uuid import uuid4
+
         from clyro.config import AuditConfig
         from clyro.mcp.audit import AuditLogger
-        from uuid import uuid4
 
         config = AuditConfig(
             log_path=str(tmp_path / "audit.jsonl"),
@@ -273,9 +271,10 @@ class TestAuditSummaryAccessors:
         assert "budget_exceeded" in audit.get_controls_triggered()
 
     def test_controls_not_duplicated(self, tmp_path):
+        from uuid import uuid4
+
         from clyro.config import AuditConfig
         from clyro.mcp.audit import AuditLogger
-        from uuid import uuid4
 
         config = AuditConfig(
             log_path=str(tmp_path / "audit.jsonl"),
@@ -301,9 +300,10 @@ class TestAuditSummaryAccessors:
 
     def test_returns_copies(self, tmp_path):
         """Getters return copies, not internal references."""
+        from uuid import uuid4
+
         from clyro.config import AuditConfig
         from clyro.mcp.audit import AuditLogger
-        from uuid import uuid4
 
         config = AuditConfig(
             log_path=str(tmp_path / "audit.jsonl"),

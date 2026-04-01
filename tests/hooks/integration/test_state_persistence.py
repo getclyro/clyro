@@ -1,6 +1,5 @@
 """Integration tests for state persistence under load."""
 
-import json
 from unittest.mock import patch
 
 import pytest
@@ -8,8 +7,8 @@ import pytest
 from clyro.hooks.audit import AuditLogger
 from clyro.hooks.config import HookConfig
 from clyro.hooks.evaluator import evaluate
-from clyro.hooks.models import HookInput, SessionState
-from clyro.hooks.state import StateLock, load_state, save_state
+from clyro.hooks.models import HookInput
+from clyro.hooks.state import StateLock, load_state
 
 
 @pytest.fixture(autouse=True)

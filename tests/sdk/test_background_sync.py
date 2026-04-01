@@ -9,9 +9,10 @@ when wrapping an agent, without requiring manual intervention.
 import asyncio
 import time
 
+from conftest import TEST_ORG_ID
+
 from clyro import ClyroConfig, wrap
 from clyro.transport import Transport
-from conftest import TEST_ORG_ID
 
 
 def sync_agent(query: str) -> str:
@@ -42,7 +43,7 @@ def test_sync_agent_background_sync():
 
     # Check transport status
     status = wrapped.get_status()
-    print(f"\nTransport status:")
+    print("\nTransport status:")
     print(f"  - Background sync started: {status['background_sync_started']}")
     if status['transport'] is not None:
         print(f"  - Transport running: {status['transport']['transport']['running']}")
@@ -53,7 +54,7 @@ def test_sync_agent_background_sync():
 
         # Check status again
         status_after = wrapped.get_status()
-        print(f"\nStatus after 2 seconds:")
+        print("\nStatus after 2 seconds:")
         print(f"  - Unsynced events: {status_after['transport']['storage']['events']['unsynced']}")
     else:
         print("  - Transport: None (local-only mode)")
@@ -81,7 +82,7 @@ async def test_async_agent_background_sync():
     # Check transport status
     if isinstance(wrapped._transport, Transport):
         status = wrapped._transport.get_sync_status()
-        print(f"\nTransport status:")
+        print("\nTransport status:")
         print(f"  - Transport running: {status['transport']['running']}")
         print(f"  - Unsynced events: {status['storage']['events']['unsynced']}")
         print(f"  - Circuit state: {status['transport']['circuit_state']}")

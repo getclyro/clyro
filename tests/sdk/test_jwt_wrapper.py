@@ -10,8 +10,9 @@ These tests verify:
 - Proper error handling when org_id is missing
 """
 
-import pytest
 from uuid import UUID, uuid4, uuid5
+
+import pytest
 
 from clyro import wrap
 from clyro.config import ClyroConfig

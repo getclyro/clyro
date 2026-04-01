@@ -1,16 +1,16 @@
 """Unit tests for backend integration module. FRD-HK-007, HK-008, HK-009."""
 
-import json
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-import pytest
-
 from clyro.backend.circuit_breaker import (
     FAILURE_THRESHOLD as CIRCUIT_FAILURE_THRESHOLD,
+)
+from clyro.backend.circuit_breaker import (
     OPEN_TIMEOUT_SECONDS as CIRCUIT_OPEN_TIMEOUT_SECONDS,
+)
+from clyro.backend.circuit_breaker import (
     SUCCESS_THRESHOLD as CIRCUIT_SUCCESS_THRESHOLD,
 )
 from clyro.hooks.backend import (
@@ -36,7 +36,6 @@ from clyro.hooks.backend import (
 )
 from clyro.hooks.constants import MEMORY_FALLBACK_MAX_EVENTS, OUTPUT_TRUNCATE_BYTES
 from clyro.hooks.models import CircuitBreakerSnapshot, SessionState
-
 
 # ── Agent Registration ────────────────────────────────────────────────────
 

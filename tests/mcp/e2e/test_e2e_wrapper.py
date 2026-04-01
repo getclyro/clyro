@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from clyro.mcp.audit import AuditLogger
 from clyro.config import WrapperConfig
+from clyro.mcp.audit import AuditLogger
 from clyro.mcp.transport import StdioTransport
 
 # A minimal echo MCP server for testing

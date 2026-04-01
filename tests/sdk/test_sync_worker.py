@@ -14,9 +14,7 @@ Tests cover:
 
 import asyncio
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -24,6 +22,7 @@ import pytest
 
 from clyro.config import ClyroConfig
 from clyro.storage.sqlite import LocalStorage
+from clyro.trace import EventType, TraceEvent, create_session_end_event, create_step_event
 from clyro.workers.sync_worker import (
     CircuitBreaker,
     CircuitBreakerConfig,
@@ -33,8 +32,6 @@ from clyro.workers.sync_worker import (
     SyncMetrics,
     SyncWorker,
 )
-from clyro.trace import EventType, TraceEvent, create_session_end_event, create_step_event
-
 
 # -----------------------------------------------------------------------------
 # Fixtures
