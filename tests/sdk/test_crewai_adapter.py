@@ -20,10 +20,14 @@ from uuid import UUID, uuid4
 import pytest
 
 from clyro.config import ClyroConfig, ExecutionControls
-from clyro.exceptions import CostLimitExceededError, FrameworkVersionError, LoopDetectedError, StepLimitExceededError
+from clyro.exceptions import (
+    CostLimitExceededError,
+    FrameworkVersionError,
+    LoopDetectedError,
+    StepLimitExceededError,
+)
 from clyro.session import Session
 from clyro.trace import AgentStage, EventType, Framework
-
 
 # =============================================================================
 # Mock CrewAI Module and Classes
@@ -1041,9 +1045,9 @@ class TestAcceptanceCriteria:
             adapter = CrewAIAdapter(mock_crew, config)
             # If we get here, the adapter was created (shouldn't happen)
             handler = adapter.create_callback_handler(MagicMock())
-            events = handler.drain_events()
+            handler.drain_events()
             # Should have no events since adapter creation should have failed
-            assert False, "Should have raised FrameworkVersionError"
+            raise AssertionError("Should have raised FrameworkVersionError")
         except FrameworkVersionError:
             # Expected behavior - no adapter created, no traces possible
             pass
@@ -1080,7 +1084,7 @@ class TestEdgeCases:
         handler = adapter.create_callback_handler(session)
 
         long_description = "A" * 1000  # Very long description
-        context = handler.on_task_start(
+        handler.on_task_start(
             task_description=long_description,
             agent_role="Agent",
         )
@@ -1114,7 +1118,7 @@ class TestEdgeCases:
         assert adapter.name == "test-crew_v2.0 (beta)"
 
         handler = adapter.create_callback_handler(session)
-        context = handler.on_task_start(
+        handler.on_task_start(
             task_description="Task with 'quotes' and \"double quotes\"",
             agent_role="Agent/Role",
         )
@@ -1224,7 +1228,7 @@ class TestStepNumberTracking:
         adapter = CrewAIAdapter(mock_crew, config)
         handler = adapter.create_callback_handler(session_with_steps)
 
-        context = handler.on_task_start(
+        handler.on_task_start(
             task_description="Test task",
             agent_role="TestAgent",
         )
@@ -1540,7 +1544,7 @@ class TestExecutionControlEnforcement:
         from clyro.trace import create_step_event
 
         session = self._make_session_with_step_limit(max_steps=2)
-        adapter = CrewAIAdapter(mock_crew, session.config)
+        CrewAIAdapter(mock_crew, session.config)
 
         # Create an event with step_number that exceeds limit
         event = create_step_event(
@@ -1610,7 +1614,7 @@ class TestExecutionControlEnforcement:
         # Step 5: task_end
         handler.on_task_end(task_output="Done", context=ctx)
         # Step 6: task_start for next task
-        ctx2 = handler.on_task_start(
+        handler.on_task_start(
             task_description="Writing task",
             agent_role="Writer",
         )
@@ -1638,7 +1642,7 @@ class TestExecutionControlEnforcement:
         handler = adapter.create_callback_handler(session)
 
         # Task start (no cost)
-        ctx = handler.on_task_start(
+        handler.on_task_start(
             task_description="Research task",
             agent_role="Researcher",
         )
@@ -2003,14 +2007,14 @@ class TestCrewAITraceHierarchy:
     def test_task_start_stores_event_id_in_map(self):
         """FRD-003: on_task_start stores task_key → event_id in _task_event_ids."""
         handler = self._make_handler()
-        ctx = handler.on_task_start("Do research", "Researcher", task_id="task-1")
+        handler.on_task_start("Do research", "Researcher", task_id="task-1")
         assert "task-1" in handler._task_event_ids
         assert isinstance(handler._task_event_ids["task-1"], UUID)
 
     def test_agent_action_inherits_task_parent(self):
         """FRD-003: on_agent_action child events inherit task's event_id as parent_event_id."""
         handler = self._make_handler()
-        ctx = handler.on_task_start("Do research", "Researcher", task_id="task-1")
+        handler.on_task_start("Do research", "Researcher", task_id="task-1")
         task_eid = handler._task_event_ids["task-1"]
 
         event = handler.on_agent_action(
@@ -2057,8 +2061,8 @@ class TestCrewAITraceHierarchy:
     def test_concurrent_tasks_isolated_parents(self):
         """FRD-004: Concurrent tasks have independent parent tracking per task_key."""
         handler = self._make_handler()
-        ctx1 = handler.on_task_start("Task A", "Agent-A", task_id="tA")
-        ctx2 = handler.on_task_start("Task B", "Agent-B", task_id="tB")
+        handler.on_task_start("Task A", "Agent-A", task_id="tA")
+        handler.on_task_start("Task B", "Agent-B", task_id="tB")
 
         eid_a = handler._task_event_ids["tA"]
         eid_b = handler._task_event_ids["tB"]

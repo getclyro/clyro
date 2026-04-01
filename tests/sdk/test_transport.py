@@ -3,7 +3,6 @@
 
 """Unit tests for the transport layer."""
 
-import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,9 +12,8 @@ import pytest
 
 from clyro.config import ClyroConfig
 from clyro.constants import DEFAULT_API_URL
-from clyro.exceptions import TransportError
-from clyro.trace import TraceEvent, EventType, create_session_start_event
-from clyro.transport import Transport, SyncTransport, DEFAULT_TIMEOUT
+from clyro.trace import create_session_start_event
+from clyro.transport import DEFAULT_TIMEOUT, SyncTransport, Transport
 
 
 @pytest.fixture

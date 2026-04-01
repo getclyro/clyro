@@ -24,7 +24,6 @@ import pytest
 from clyro.cli import _handle_status, _status_internal, main
 from clyro.constants import APP_PRICING_URL
 
-
 # =============================================================================
 # Local Mode (FRD-CT-001)
 # =============================================================================

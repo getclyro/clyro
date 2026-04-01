@@ -10,11 +10,9 @@ queue behavior, and graceful shutdown.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
-from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -22,8 +20,7 @@ pytest.importorskip("opentelemetry.proto", reason="opentelemetry-proto required 
 
 from clyro.config import ClyroConfig
 from clyro.otlp_exporter import OTLPExporter, _python_to_any_value
-from clyro.trace import AgentStage, EventType, Framework, TraceEvent
-
+from clyro.trace import AgentStage, EventType, TraceEvent
 
 # =============================================================================
 # Helpers
@@ -261,7 +258,6 @@ class TestExporterStats:
 
 class TestPythonToAnyValue:
     def test_string_value(self):
-        from opentelemetry.proto.common.v1.common_pb2 import AnyValue
         result = _python_to_any_value("hello")
         assert result.string_value == "hello"
 

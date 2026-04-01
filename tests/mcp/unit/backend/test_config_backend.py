@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from clyro.constants import DEFAULT_API_URL
 from clyro.config import BackendConfig, WrapperConfig, load_config
+from clyro.constants import DEFAULT_API_URL
 
 
 class TestBackendConfigDefaults:

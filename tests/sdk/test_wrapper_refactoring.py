@@ -11,17 +11,14 @@ and maintain the same behavior as the original implementation.
 """
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
+from conftest import TEST_ORG_ID
 
 from clyro import wrap
 from clyro.config import ClyroConfig, ExecutionControls, reset_config
-from conftest import TEST_ORG_ID
 from clyro.exceptions import StepLimitExceededError
 from clyro.session import get_current_session
-from clyro.storage.sqlite import LocalStorage
 
 
 class TestRefactoredExecutionFlow:

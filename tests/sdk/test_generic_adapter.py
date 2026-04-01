@@ -3,9 +3,7 @@
 
 """Unit tests for the generic adapter."""
 
-from uuid import uuid4
 
-import pytest
 
 from clyro.adapters.generic import GenericAdapter, detect_adapter
 from clyro.config import ClyroConfig

@@ -1,6 +1,5 @@
 """Unit tests for hook evaluator."""
 
-import json
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +8,6 @@ from clyro.hooks.audit import AuditLogger
 from clyro.hooks.config import HookConfig
 from clyro.hooks.evaluator import _enrich_tool_input, evaluate
 from clyro.hooks.models import HookInput, SessionState
-from clyro.hooks.state import save_state
 
 
 @pytest.fixture(autouse=True)

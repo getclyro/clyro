@@ -1,6 +1,6 @@
 """Unit tests for data models."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from clyro.hooks.models import HookInput, HookOutput, PolicyCache, SessionState
 

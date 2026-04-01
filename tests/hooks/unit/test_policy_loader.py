@@ -1,11 +1,6 @@
 """Unit tests for policy loader."""
 
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
-
-import pytest
-
-from clyro.config import PolicyRule
+from datetime import UTC, datetime, timedelta
 
 from clyro.hooks.config import HookConfig
 from clyro.hooks.models import PolicyCache, SessionState
@@ -19,14 +14,14 @@ class TestCacheIsFresh:
 
     def test_recent_cache_is_fresh(self):
         cache = PolicyCache(
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=datetime.now(UTC),
             ttl_seconds=300,
         )
         assert _cache_is_fresh(cache)
 
     def test_old_cache_is_stale(self):
         cache = PolicyCache(
-            fetched_at=datetime.now(timezone.utc) - timedelta(seconds=600),
+            fetched_at=datetime.now(UTC) - timedelta(seconds=600),
             ttl_seconds=300,
         )
         assert not _cache_is_fresh(cache)
@@ -97,7 +92,7 @@ class TestGetMergedPolicies:
             session_id="test",
             agent_id="test-agent-id",
             policy_cache=PolicyCache(
-                fetched_at=datetime.now(timezone.utc),
+                fetched_at=datetime.now(UTC),
                 ttl_seconds=300,
                 merged_policies=[
                     {"parameter": "command", "operator": "contains",

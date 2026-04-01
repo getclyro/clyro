@@ -12,14 +12,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clyro.constants import DEFAULT_API_URL, GITHUB_NEW_ISSUE_URL
 from clyro.cli import (
     _auto_capture_context,
     _is_headless,
     _open_github_issue,
     main,
 )
-
+from clyro.constants import DEFAULT_API_URL, GITHUB_NEW_ISSUE_URL
 
 # ===========================================================================
 # Context capture

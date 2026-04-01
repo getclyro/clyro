@@ -1,7 +1,6 @@
 """Integration tests for evaluate end-to-end flow."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -155,7 +154,7 @@ class TestEndToEndStatePersistence:
         results = []
 
         # Same command 3 times should trigger loop (threshold=3)
-        for i in range(4):
+        for _i in range(4):
             audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
             hook_input = HookInput(
                 session_id="e2e-loop",
@@ -168,7 +167,7 @@ class TestEndToEndStatePersistence:
             audit.close()
 
         # First two should allow, third or fourth should block
-        allow_count = sum(1 for r in results if r is None)
+        sum(1 for r in results if r is None)
         block_count = sum(1 for r in results if r is not None)
         assert block_count > 0
         blocked = [r for r in results if r is not None][0]

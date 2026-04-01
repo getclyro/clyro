@@ -15,18 +15,14 @@ Tests verify:
 - Timeout handling (FRD-CT-008)
 """
 
-import json
 import os
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from clyro.telemetry_client import (
     _collect_telemetry_payload,
     _is_telemetry_enabled,
     submit_telemetry,
 )
-
 
 # =============================================================================
 # Opt-In Gating (FRD-CT-011)

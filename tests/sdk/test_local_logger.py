@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from io import StringIO
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
-
-from clyro.constants import APP_POLICIES_URL, APP_URL
 
 import pytest
 
 from clyro.config import ClyroConfig
+from clyro.constants import APP_POLICIES_URL, APP_URL
 from clyro.local_logger import LocalTerminalLogger, _is_quiet, reset_welcome_flag
 from clyro.trace import EventType, TraceEvent
 

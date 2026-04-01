@@ -4,7 +4,6 @@ Shared test fixtures for clyro-mcp tests.
 
 from __future__ import annotations
 
-import tempfile
 from uuid import UUID
 
 import pytest

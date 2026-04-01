@@ -6,15 +6,13 @@ Integration tests for execution controls including step limits, cost limits,
 and loop detection working together with the session and wrapper.
 """
 
-from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
+from conftest import TEST_ORG_ID
 
 from clyro import wrap
 from clyro.config import ClyroConfig, ExecutionControls
-from conftest import TEST_ORG_ID
-from clyro.cost import CostCalculator, TokenUsage
 from clyro.exceptions import (
     CostLimitExceededError,
     LoopDetectedError,

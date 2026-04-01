@@ -4,9 +4,8 @@
 """Unit tests for policy client, evaluator, and session integration."""
 
 import tempfile
-from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -16,8 +15,7 @@ from clyro.config import ClyroConfig, ExecutionControls
 from clyro.exceptions import PolicyViolationError
 from clyro.policy import ConsoleApprovalHandler, PolicyClient, PolicyDecision, PolicyEvaluator
 from clyro.session import Session
-from clyro.trace import EventType, Framework
-
+from clyro.trace import EventType
 
 # =============================================================================
 # Fixtures

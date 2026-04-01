@@ -8,16 +8,14 @@ These tests verify that all components work together correctly
 to provide the expected SDK behavior.
 """
 
-import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
+from conftest import TEST_ORG_ID
 
 import clyro
 from clyro.config import ClyroConfig, ExecutionControls, reset_config
-from clyro.storage.sqlite import LocalStorage
-from conftest import TEST_ORG_ID
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,6 @@
 """Integration tests for trace end-to-end flow."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

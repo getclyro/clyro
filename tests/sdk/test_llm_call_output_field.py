@@ -8,9 +8,7 @@ FRD-013 adds a post-completion policy check with an `output` field to
 enable response-content policies (PII detection, grounding, attribution).
 """
 
-from unittest.mock import MagicMock, patch, AsyncMock
-
-import pytest
+from unittest.mock import patch
 
 from clyro.config import ClyroConfig
 from clyro.session import Session

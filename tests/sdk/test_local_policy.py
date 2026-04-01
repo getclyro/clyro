@@ -9,29 +9,23 @@ Test coverage targets:
 
 from __future__ import annotations
 
-import os
 import textwrap
 import time
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from clyro.exceptions import ClyroConfigError, PolicyViolationError
 from clyro.local_policy import (
-    ActionPolicies,
-    GlobalPolicies,
-    LocalPolicyEvaluationResult,
     SDKLocalPolicyEvaluator,
     SDKPolicyConfig,
     SDKPolicyRule,
-    _DEFAULT_TEMPLATE,
     load_sdk_policies,
     reset_sdk_policy_cache,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -90,14 +84,14 @@ class TestSDKPolicyRule:
         assert rule.action == "block"
 
     def test_invalid_action_raises(self):
-        with pytest.raises(Exception):  # ValidationError
+        with pytest.raises(ValidationError):
             SDKPolicyRule(
                 parameter="cost", operator="max_value", value=100,
                 action="unknown_value",
             )
 
     def test_inherits_operator_validation(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             SDKPolicyRule(
                 parameter="cost", operator="invalid_op", value=100,
             )
@@ -134,7 +128,7 @@ class TestSDKPolicyConfig:
         assert config.version == 1
 
     def test_wrong_version_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             SDKPolicyConfig(version=2)
 
     def test_global_alias(self):

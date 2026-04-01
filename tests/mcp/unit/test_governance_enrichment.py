@@ -10,13 +10,12 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 from uuid import uuid4
 
 from clyro.backend.trace_event_factory import TraceEventFactory
 from clyro.config import WrapperConfig
-from clyro.policy import LocalPolicyEvaluator as PolicyEvaluator
 from clyro.mcp.session import McpSession
+from clyro.policy import LocalPolicyEvaluator as PolicyEvaluator
 
 
 def _config_with_rules(rules: list[dict]) -> WrapperConfig:

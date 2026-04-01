@@ -337,7 +337,7 @@ class TestModelSelectorIntegration:
         rec = ModelSelector.recommend("classification", budget_usd=0.001)
 
         # Should recommend cheap model
-        model = rec["recommended_models"][0]
+        _model = rec["recommended_models"][0]
         params = rec["params"]
 
         # Verify settings are appropriate for classification
@@ -350,7 +350,7 @@ class TestModelSelectorIntegration:
         # User wants creative writing, willing to pay more
         rec = ModelSelector.recommend("creative_writing", budget_usd=0.1)
 
-        model = rec["recommended_models"][0]
+        _model = rec["recommended_models"][0]
         params = rec["params"]
 
         # Verify settings are appropriate for creative tasks

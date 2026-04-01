@@ -21,14 +21,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from conftest import TEST_ORG_ID
 
 import clyro
 from clyro.config import ClyroConfig, ExecutionControls, reset_config
 from clyro.exceptions import FrameworkVersionError
 from clyro.storage.sqlite import LocalStorage
-from clyro.trace import EventType, Framework
-from conftest import TEST_ORG_ID
-
+from clyro.trace import Framework
 
 # =============================================================================
 # Mock LangGraph Module and Classes
@@ -54,11 +53,11 @@ class MockStateGraph:
         self._edges: list[tuple[str, str]] = []
         self._conditional_edges: list[dict] = []
 
-    def add_node(self, name: str, func: Any) -> "MockStateGraph":
+    def add_node(self, name: str, func: Any) -> MockStateGraph:
         self._nodes[name] = func
         return self
 
-    def add_edge(self, source: str, target: str) -> "MockStateGraph":
+    def add_edge(self, source: str, target: str) -> MockStateGraph:
         self._edges.append((source, target))
         return self
 
@@ -67,7 +66,7 @@ class MockStateGraph:
         source: str,
         path_map: dict[str, str],
         condition: Any = None,
-    ) -> "MockStateGraph":
+    ) -> MockStateGraph:
         self._conditional_edges.append({
             "source": source,
             "path_map": path_map,
@@ -75,7 +74,7 @@ class MockStateGraph:
         })
         return self
 
-    def compile(self) -> "MockCompiledGraph":
+    def compile(self) -> MockCompiledGraph:
         return MockCompiledGraph(self)
 
 
@@ -358,7 +357,7 @@ class TestLangGraphAsyncExecution:
         self, mock_langgraph_module, simple_graph, temp_storage_path
     ):
         """Test async execution of LangGraph agent."""
-        config = ClyroConfig(agent_name="test-agent", local_storage_path=temp_storage_path)
+        ClyroConfig(agent_name="test-agent", local_storage_path=temp_storage_path)
         compiled = simple_graph.compile()
 
         # Create async wrapper manually
@@ -556,8 +555,9 @@ class TestLangGraphCallbackInjection:
         self, mock_langgraph_module, simple_graph, temp_storage_path
     ):
         """Test that existing callbacks are preserved when injecting."""
-        from clyro.adapters.langgraph import LangGraphAdapter
         from unittest.mock import MagicMock
+
+        from clyro.adapters.langgraph import LangGraphAdapter
 
         config = ClyroConfig(agent_name="test-agent", local_storage_path=temp_storage_path)
         compiled = simple_graph.compile()

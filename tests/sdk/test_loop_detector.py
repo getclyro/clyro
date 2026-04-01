@@ -9,7 +9,6 @@ from clyro.exceptions import LoopDetectedError
 from clyro.loop_detector import (
     DEFAULT_EXCLUDED_FIELDS,
     LoopDetector,
-    LoopDetectorState,
     LoopSignal,
 )
 
@@ -411,7 +410,7 @@ class TestEdgeCases:
         state = {"constant": True}
 
         # Should not trigger until 100th iteration
-        for i in range(99):
+        for _i in range(99):
             signal = detector.check(state=state, raise_on_loop=False)
             assert signal is None
 

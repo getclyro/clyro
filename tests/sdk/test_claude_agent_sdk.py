@@ -32,15 +32,11 @@ import pytest
 
 from clyro.config import ClyroConfig, ExecutionControls
 from clyro.exceptions import (
-    CostLimitExceededError,
     FrameworkVersionError,
-    LoopDetectedError,
     PolicyViolationError,
-    StepLimitExceededError,
 )
 from clyro.session import Session
 from clyro.trace import AgentStage, EventType, Framework, TraceEvent
-
 
 # --- Mock Claude Agent SDK module ---
 
@@ -935,7 +931,6 @@ class TestPolicyEnforcement:
         session.start()
 
         # Simulate PolicyViolationError raised by _enforce_decision when no handler
-        from clyro.exceptions import PolicyViolationError
 
         mock_evaluator = MagicMock()
         mock_evaluator.evaluate_async = AsyncMock(
@@ -975,7 +970,6 @@ class TestPolicyEnforcement:
         session = Session(config=config, framework=Framework.CLAUDE_AGENT_SDK)
         session.start()
 
-        from clyro.exceptions import PolicyViolationError
 
         mock_evaluator = MagicMock()
         mock_evaluator.evaluate_async = AsyncMock(
@@ -1123,7 +1117,8 @@ class TestHookRegistrar:
         handler = ClaudeAgentHandler(config=config, framework_version="0.1.42")
         registrar = HookRegistrar(config=config, handler=handler)
 
-        existing_hook = lambda x, y: None
+        def existing_hook(x, y):
+            return None
         hooks: dict = {"PreToolUse": [existing_hook]}
         options = type("Options", (), {})()
         registrar.register(hooks, options=options)
@@ -1430,7 +1425,7 @@ class TestCorrelationIntegration:
         tool_events = [e for e in events if e.event_type == EventType.TOOL_CALL]
         assert len(tool_events) == 2
         act_event = next(e for e in tool_events if e.agent_stage == AgentStage.ACT)
-        observe_event = next(e for e in tool_events if e.agent_stage == AgentStage.OBSERVE)
+        next(e for e in tool_events if e.agent_stage == AgentStage.OBSERVE)
         # The observe event CANNOT link back — SDK gave no stable id for PostToolUse lookup.
         # The fix (B1) ensures PreToolUse metadata captures the synthetic id, not "".
         assert act_event.metadata["tool_use_id"] != ""  # B1: synthetic UUID, not empty string
