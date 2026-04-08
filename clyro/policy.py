@@ -372,6 +372,84 @@ class PolicyEvaluator:
         else:
             self._approval_handler = approval_handler  # type: ignore[assignment]
 
+    def _check_local_policies(
+        self,
+        action_type: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        """Evaluate local YAML policies before calling the backend.
+
+        Loads rules from ~/.clyro/sdk/policies.yaml (same file used in
+        local mode by SDKLocalPolicyEvaluator) and evaluates them using
+        the shared 8-operator evaluator.  Raises PolicyViolationError if
+        any rule is violated.
+
+        Fail-open: if the YAML cannot be loaded or a single rule throws,
+        evaluation continues silently (matches SDKLocalPolicyEvaluator
+        behavior).
+        """
+        import clyro.local_policy as _lp
+
+        try:
+            config = _lp.load_sdk_policies()
+        except Exception:
+            return
+        # Collect rules scoped to this action_type, then global (FRD-SOF-003)
+        all_rules: list[Any] = []
+        if config.actions and action_type in config.actions:
+            all_rules.extend(config.actions[action_type].policies)
+        if config.global_ is not None:
+            all_rules.extend(config.global_.policies)
+
+        if not all_rules:
+            return
+
+        for rule in all_rules:
+            try:
+                found, actual = _resolve_local_parameter(parameters, rule.parameter)
+                if not found:
+                    continue
+
+                if not _evaluate_local_rule(rule, actual):
+                    continue
+
+                # Rule violated — check action field for require_approval
+                action = getattr(rule, "action", "block")
+                if action == "require_approval" and self._approval_handler is not None:
+                    decision_obj = PolicyDecision(
+                        decision="require_approval",
+                        rule_id=rule.policy_id or "local",
+                        rule_name=rule.name or f"{rule.operator}({rule.parameter})",
+                        message=f"Rule '{rule.name or rule.parameter}' requires approval",
+                    )
+                    try:
+                        approved = self._approval_handler(decision_obj, action_type)
+                    except Exception:
+                        approved = False
+                    if approved:
+                        continue
+
+                # Block
+                raise PolicyViolationError(
+                    rule_id=rule.policy_id or "local",
+                    rule_name=rule.name or f"{rule.operator}({rule.parameter})",
+                    message=(
+                        f"Policy violation: rule '{rule.name or rule.parameter}' "
+                        f"blocked {action_type}"
+                    ),
+                    action_type=action_type,
+                )
+            except PolicyViolationError:
+                raise  # Re-raise policy violations
+            except Exception as exc:
+                # Fail-open per rule: skip and continue
+                logger.warning(
+                    "local_policy_rule_error",
+                    rule_name=getattr(rule, "name", "unknown"),
+                    error=str(exc),
+                )
+                continue
+
     @property
     def is_enabled(self) -> bool:
         """Check if policy enforcement is active."""
@@ -405,6 +483,9 @@ class PolicyEvaluator:
         """
         if not self.is_enabled:
             return PolicyDecision.allow()
+
+        # Check local YAML policies first — blocks before calling backend
+        self._check_local_policies(action_type, parameters)
 
         start_time = time.perf_counter()
 
@@ -450,6 +531,9 @@ class PolicyEvaluator:
         """
         if not self.is_enabled:
             return PolicyDecision.allow()
+
+        # Check local YAML policies first — blocks before calling backend
+        self._check_local_policies(action_type, parameters)
 
         start_time = time.perf_counter()
 
