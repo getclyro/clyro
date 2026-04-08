@@ -1008,3 +1008,191 @@ class TestConsoleApprovalHandler:
             result = handler(decision, "tool_call")
 
         assert result is True
+
+
+# =============================================================================
+# Local Policy Pre-check in Cloud Mode Tests
+# =============================================================================
+
+
+class TestPolicyEvaluatorLocalPreCheck:
+    """Tests for _check_local_policies in cloud-mode PolicyEvaluator."""
+
+    def test_local_policy_blocks_before_backend(self, policy_config, agent_id):
+        """Local YAML violation blocks without calling the backend."""
+        from clyro.local_policy import (
+            SDKPolicyConfig,
+            SDKPolicyRule,
+            reset_sdk_policy_cache,
+        )
+
+        rule = SDKPolicyRule(
+            parameter="amount", operator="max_value", value=100,
+            name="max_amount", action="block",
+        )
+        sdk_config = SDKPolicyConfig.model_validate(
+            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+        )
+
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        reset_sdk_policy_cache()
+        try:
+            with patch("clyro.local_policy.load_sdk_policies", return_value=sdk_config):
+                with patch.object(evaluator._client, "evaluate_sync") as mock_backend:
+                    with pytest.raises(PolicyViolationError) as exc_info:
+                        evaluator.evaluate_sync(
+                            "tool_call", {"amount": 150, "tool_name": "refund"},
+                        )
+                    mock_backend.assert_not_called()
+
+            assert exc_info.value.rule_name == "max_amount"
+        finally:
+            reset_sdk_policy_cache()
+
+    def test_local_allows_then_backend_called(
+        self, policy_config, agent_id, allow_response
+    ):
+        """When local policies pass, backend evaluate is still called."""
+        from clyro.local_policy import (
+            SDKPolicyConfig,
+            SDKPolicyRule,
+            reset_sdk_policy_cache,
+        )
+
+        rule = SDKPolicyRule(
+            parameter="amount", operator="max_value", value=100,
+            name="max_amount", action="block",
+        )
+        sdk_config = SDKPolicyConfig.model_validate(
+            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+        )
+
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        reset_sdk_policy_cache()
+        try:
+            with patch("clyro.local_policy.load_sdk_policies", return_value=sdk_config):
+                with patch.object(
+                    evaluator._client, "evaluate_sync",
+                    return_value=PolicyDecision.from_response(allow_response),
+                ) as mock_backend:
+                    decision = evaluator.evaluate_sync(
+                        "tool_call", {"amount": 50, "tool_name": "refund"},
+                    )
+                    mock_backend.assert_called_once()
+                    assert decision.is_allowed is True
+        finally:
+            reset_sdk_policy_cache()
+
+    def test_no_local_policies_skips_to_backend(
+        self, policy_config, agent_id, allow_response
+    ):
+        """When local YAML has zero rules, backend is called directly."""
+        from clyro.local_policy import SDKPolicyConfig, reset_sdk_policy_cache
+
+        empty_config = SDKPolicyConfig(version=1)
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        reset_sdk_policy_cache()
+        try:
+            with patch("clyro.local_policy.load_sdk_policies", return_value=empty_config):
+                with patch.object(
+                    evaluator._client, "evaluate_sync",
+                    return_value=PolicyDecision.from_response(allow_response),
+                ) as mock_backend:
+                    decision = evaluator.evaluate_sync(
+                        "tool_call", {"tool_name": "anything"},
+                    )
+                    mock_backend.assert_called_once()
+                    assert decision.is_allowed is True
+        finally:
+            reset_sdk_policy_cache()
+
+    def test_per_action_type_scoping(self, policy_config, agent_id, allow_response):
+        """Rule under actions.llm_call does NOT block tool_call."""
+        from clyro.local_policy import (
+            SDKPolicyConfig,
+            SDKPolicyRule,
+            reset_sdk_policy_cache,
+        )
+
+        llm_rule = SDKPolicyRule(
+            parameter="model", operator="in_list", value=["gpt-4"],
+            name="allowed_models", action="block",
+        )
+        sdk_config = SDKPolicyConfig.model_validate({
+            "version": 1,
+            "actions": {"llm_call": {"policies": [llm_rule.model_dump()]}},
+            "global": {"policies": []},
+        })
+
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        reset_sdk_policy_cache()
+        try:
+            with patch("clyro.local_policy.load_sdk_policies", return_value=sdk_config):
+                with patch.object(
+                    evaluator._client, "evaluate_sync",
+                    return_value=PolicyDecision.from_response(allow_response),
+                ):
+                    # tool_call should NOT be blocked by llm_call-scoped rule
+                    decision = evaluator.evaluate_sync(
+                        "tool_call", {"model": "claude-3", "tool_name": "search"},
+                    )
+                    assert decision.is_allowed is True
+        finally:
+            reset_sdk_policy_cache()
+
+    def test_local_load_failure_is_fail_open(
+        self, policy_config, agent_id, allow_response
+    ):
+        """If local YAML can't be loaded, evaluation falls through to backend."""
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        with patch(
+            "clyro.local_policy.load_sdk_policies",
+            side_effect=RuntimeError("disk error"),
+        ):
+            with patch.object(
+                evaluator._client, "evaluate_sync",
+                return_value=PolicyDecision.from_response(allow_response),
+            ) as mock_backend:
+                decision = evaluator.evaluate_sync(
+                    "tool_call", {"tool_name": "anything"},
+                )
+                mock_backend.assert_called_once()
+                assert decision.is_allowed is True
+
+    @pytest.mark.asyncio
+    async def test_async_local_policy_blocks_before_backend(
+        self, policy_config, agent_id
+    ):
+        """Async path: local YAML violation blocks without calling backend."""
+        from clyro.local_policy import (
+            SDKPolicyConfig,
+            SDKPolicyRule,
+            reset_sdk_policy_cache,
+        )
+
+        rule = SDKPolicyRule(
+            parameter="amount", operator="max_value", value=100,
+            name="max_amount", action="block",
+        )
+        sdk_config = SDKPolicyConfig.model_validate(
+            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+        )
+
+        evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
+
+        reset_sdk_policy_cache()
+        try:
+            with patch("clyro.local_policy.load_sdk_policies", return_value=sdk_config):
+                with patch.object(evaluator._client, "evaluate_async") as mock_backend:
+                    with pytest.raises(PolicyViolationError):
+                        await evaluator.evaluate_async(
+                            "tool_call", {"amount": 150, "tool_name": "refund"},
+                        )
+                    mock_backend.assert_not_called()
+        finally:
+            reset_sdk_policy_cache()
