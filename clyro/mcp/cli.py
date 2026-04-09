@@ -131,9 +131,14 @@ def _recover_orphaned_session(audit_log_path: str) -> None:
         _delete_marker(marker)
 
 
-def _derive_instance_id(agent_name: str) -> str:
-    """Derive instance_id from agent name: sha256(agent_name)[:12] (FRD-018)."""
-    return hashlib.sha256(agent_name.encode()).hexdigest()[:12]
+def _derive_instance_id(agent_name: str, api_url: str = "") -> str:
+    """Derive instance_id from agent name + API URL: sha256(name|url)[:12] (FRD-018).
+
+    Including the API URL ensures different environments (production, staging)
+    get separate cached agent IDs and don't cross-contaminate.
+    """
+    key = f"{agent_name}|{api_url}"
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 def _derive_agent_name(config_agent_name: str | None, server_command: list[str]) -> str:
@@ -161,7 +166,7 @@ async def _init_backend(config, session, server_command):
     api_key = config.resolved_api_key
     api_url = config.resolved_api_url
     agent_name = _derive_agent_name(config.backend.agent_name, server_command)
-    instance_id = _derive_instance_id(agent_name)
+    instance_id = _derive_instance_id(agent_name, api_url)
 
     # Create HTTP client (FRD-015)
     http_client = HttpSyncClient(api_key=api_key, base_url=api_url)

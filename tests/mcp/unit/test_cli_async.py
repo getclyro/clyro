@@ -39,8 +39,20 @@ class TestDeriveInstanceId:
 
     def test_uses_sha256(self) -> None:
         name = "test-agent"
-        expected = hashlib.sha256(name.encode()).hexdigest()[:12]
+        expected = hashlib.sha256(f"{name}|".encode()).hexdigest()[:12]
         assert _derive_instance_id(name) == expected
+
+    def test_different_urls_different_ids(self) -> None:
+        """Same agent name with different API URLs produces different IDs."""
+        id1 = _derive_instance_id("my-agent", "https://api.clyro.dev/")
+        id2 = _derive_instance_id("my-agent", "https://api-staging.clyro.dev/")
+        assert id1 != id2
+
+    def test_url_included_in_hash(self) -> None:
+        name = "test-agent"
+        url = "https://api.clyro.dev/"
+        expected = hashlib.sha256(f"{name}|{url}".encode()).hexdigest()[:12]
+        assert _derive_instance_id(name, url) == expected
 
 
 class TestDeriveAgentName:
