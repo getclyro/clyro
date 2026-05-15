@@ -35,12 +35,13 @@ class HookOutput(BaseModel):
 class PolicyCache(BaseModel):
     """Cached cloud policy state within a session.
 
-    ``resolved_default_action`` captures the most-restrictive merge of the
-    wrapper's local ``default_action`` and every fetched cloud policy's own
-    ``default_action``. Cached alongside the rules so a cache hit can restore
-    the merged default — without this, fresh config loads on each event
-    would silently revert to the local-only default and drop the cloud's
-    centrally-mandated block.
+    ``resolved_default_action`` captures the cloud-wins merge of the wrapper's
+    local ``default_action`` and every fetched cloud policy's own
+    ``default_action``: when the cloud declared any default, it overrides
+    local; otherwise the local default is used. Cached alongside the rules
+    so a cache hit can restore the merged default — without this, fresh
+    config loads on each event would silently revert to the local-only
+    default and drop the cloud's value.
     """
 
     fetched_at: datetime | None = None

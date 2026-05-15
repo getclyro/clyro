@@ -46,14 +46,24 @@ hooks to `{matched, no_match, skipped}`. Replaces the previous mix of
 (backend verbose response). Existing dashboards or log queries keying on the
 old strings will need updating.
 
-**MCP wrapper / hooks: cloud `default_action` now merged into wrapper config.**
-Previously each fetched cloud policy's `default_action` was silently discarded
-when its rules were merged into the local `WrapperConfig`. Now
-`CloudPolicyFetcher.fetch_and_merge` returns a tuple of
-`(rules, resolved_default_action)`, where the resolved value uses
-**most-restrictive-wins** across the wrapper's local `default_action` and every
-fetched cloud policy's. The hooks `PolicyCache` persists the resolved default
-so it survives cache hits across the per-event fresh-config-load cycle.
+**MCP wrapper / hooks: cloud `default_action` now merged into wrapper config —
+cloud-wins precedence.** Previously each fetched cloud policy's
+`default_action` was silently discarded when its rules were merged into the
+local `WrapperConfig`. Now `CloudPolicyFetcher.fetch_and_merge` returns a
+tuple of `(rules, resolved_default_action)`, where the resolved value uses
+**cloud-wins** precedence: when the cloud declared any `default_action`, it
+overrides the wrapper's local default. If multiple cloud policies disagree,
+the most-restrictive among cloud (`block` over `allow`) wins. The local
+default applies only when no cloud policies were fetched (no policies attached
+to the agent, or fetch failed). The hooks `PolicyCache` persists the resolved
+default so it survives cache hits across the per-event fresh-config-load cycle.
+
+**SDK cloud-mode pre-flight no longer enforces local `default_action`.** In
+cloud mode the backend's `default_action` is authoritative. The SDK's local
+YAML pre-flight (`PolicyEvaluator._check_local_policies`) continues to enforce
+explicit local rules (a matched `action: block` rule still short-circuits
+before the network call), but a local YAML's `default_action: block` no longer
+raises at pre-flight — the decision is deferred to the backend.
 
 ### Migration
 
@@ -71,12 +81,24 @@ blocklist — need their operator flipped to preserve original behavior:
 | Allowlist (allow listed; block others) | `in_list X + action: block`, default allow | `in_list X + action: allow`, **default block** *or* `not_in_list X + action: block`, default allow |
 | Denylist (block listed; allow others) | `not_in_list X + action: block`, default allow | `in_list X + action: block`, default allow |
 
-When in doubt, prefer the **denylist** shape (`default_action: allow` + a rule
-with `action: block`). It works correctly with field-scoped rules — rules whose
-`parameter` doesn't appear on every action type — because the rule simply
-skips on actions where the field is missing and the call falls through to
-`allow`. The allowlist shape (`default_action: block` + `action: allow`) blocks
-`agent_execution` and `llm_call` when the rule's field is tool-specific.
+Both shapes now work correctly with field-scoped rules — rules whose
+`parameter` doesn't appear on every action type:
+
+- **Denylist** (`default_action: allow` + `action: block`): the rule simply
+  skips on actions where the field is missing and the call falls through to
+  `allow`.
+- **Allowlist** (`default_action: block` + `action: allow`): when every rule
+  in a policy was skipped because its field wasn't present on this action,
+  the policy is treated as inapplicable — `default_action` is bypassed and
+  the call falls through to `allow`. So an allowlist policy targeting
+  `rmq_cluster` (only present on tool calls) no longer blocks
+  `agent_execution` or `llm_call`.
+
+This per-policy "all rules skipped → policy inapplicable" rule applies
+symmetrically across SDK, MCP wrapper, Claude Code hooks, and the cloud
+backend evaluator. The zero-rules case (a policy with no rules at all)
+still fires `default_action`, preserving "block everything by default" for
+users who explicitly want it.
 
 See [docs/concepts/policies.md](https://docs.clyro.dev/concepts/policies) for
 the updated operator reference and rule-shape guidance.

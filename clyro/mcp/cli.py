@@ -185,9 +185,11 @@ async def _init_backend(config, session, server_command):
         local_default_action=config.default_action,
     )
     # Update config with merged policies (cloud + local) and the resolved
-    # default_action. Reconciliation uses most-restrictive-wins: any
-    # cloud policy with default_action=block forces the wrapper default
-    # to block, preventing silent loss of a centrally-mandated denylist.
+    # default_action. Reconciliation uses cloud-wins: whenever the cloud
+    # declared any default_action, it overrides the local wrapper's
+    # default_action. If multiple cloud policies disagree, the most-
+    # restrictive among cloud (block) wins. The local default applies
+    # only when no cloud policies were fetched.
     config.global_.policies = merged_policies
     config.default_action = resolved_default
 
