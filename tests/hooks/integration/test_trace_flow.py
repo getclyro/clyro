@@ -26,7 +26,7 @@ def isolated_sessions(tmp_path):
 
 @pytest.fixture
 def config_path(tmp_path):
-    config_data = {
+    config_data = {"default_action": "allow",
         "global": {"cost_per_token_usd": 0.00001},
         "backend": {"api_key": None},
         "audit": {

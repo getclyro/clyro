@@ -13,6 +13,11 @@ Merge rules (FRD-017):
 - Cloud policies with names not present in local YAML are added.
 - Cloud policies with unsupported operators are skipped with warning.
 - ``require_approval`` actions are converted to ``block`` (§10).
+- Each fetched cloud policy carries its own ``default_action``. The
+  resolved ``default_action`` for the wrapper is computed with
+  most-restrictive-wins: if the local wrapper or any cloud policy sets
+  ``default_action: block``, the resolved value is ``block``; otherwise
+  ``allow``.
 - Fetch has a hard 2-second timeout (fail-open to local-only).
 """
 
@@ -61,25 +66,36 @@ class CloudPolicyFetcher:
         agent_id: str | None,
         local_policies: list[PolicyRule],
         timeout: float = 2.0,
-    ) -> list[PolicyRule]:
+        local_default_action: str = "allow",
+    ) -> tuple[list[PolicyRule], str]:
         """
         Fetch cloud policies, merge with local (FRD-017).
 
+        Args:
+            agent_id: Agent UUID for fetching agent-scoped policies.
+            local_policies: Locally-defined rules from the wrapper YAML.
+            timeout: Hard timeout for the fetch.
+            local_default_action: The wrapper's local ``default_action``.
+                Used as a floor when reconciling with cloud-policy defaults.
+
         Returns:
-            Merged policy list. On failure: ``local_policies`` unchanged.
+            ``(merged_rule_list, resolved_default_action)``. The resolved
+            default uses most-restrictive-wins across the local and every
+            fetched cloud policy. On any fetch failure: returns
+            ``(local_policies, local_default_action)`` unchanged.
         """
         try:
             async with asyncio.timeout(timeout):
                 if agent_id:
-                    cloud_rules = await self._fetch_agent_policies(agent_id)
+                    cloud_rules, cloud_defaults = await self._fetch_agent_policies(agent_id)
                 else:
                     # TODO(v1.2): fetch org-level policies via GET /v1/policies
                     # when the backend API supports it. For v1.1, agent_id=None
                     # means registration failed → fall back to local-only (NFR-007).
-                    cloud_rules = []
+                    cloud_rules, cloud_defaults = [], []
         except (TimeoutError, httpx.HTTPError, AuthenticationError) as exc:
             logger.warning("cloud_policy_fetch_failed", error=str(exc), fallback="local_only")
-            return local_policies
+            return local_policies, local_default_action
         except Exception as exc:
             logger.warning(
                 "cloud_policy_fetch_unexpected",
@@ -87,26 +103,36 @@ class CloudPolicyFetcher:
                 error=str(exc),
                 fallback="local_only",
             )
-            return local_policies
-        if not cloud_rules:
-            return local_policies
-        return self._merge(cloud_rules, local_policies)
+            return local_policies, local_default_action
+        if not cloud_rules and not cloud_defaults:
+            return local_policies, local_default_action
+        return self._merge(cloud_rules, local_policies, cloud_defaults, local_default_action)
 
-    async def _fetch_agent_policies(self, agent_id: str) -> list[dict[str, Any]]:
-        """Fetch policies for a specific agent."""
+    async def _fetch_agent_policies(self, agent_id: str) -> tuple[list[dict[str, Any]], list[str]]:
+        """Fetch policies for a specific agent. Returns (rules, defaults)."""
         response = await self._http_client.fetch_policies(agent_id)
         policies = response.get("policies", [])
         return self._extract_rules(policies)
 
-    def _extract_rules(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Extract rules from backend policy format to flat rule list."""
+    def _extract_rules(
+        self, policies: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Extract rules from backend policy format to flat rule list.
+
+        Also collects each policy's ``default_action`` so the wrapper can
+        reconcile its own ``default_action`` against the cloud policies'.
+        """
         rules: list[dict[str, Any]] = []
+        cloud_defaults: list[str] = []
         for policy in policies:
             policy_name = policy.get("name", "")
             raw_rules = policy.get("rules", {})
 
-            # Backend format: {"version": "1.0", "rules": [...]}
+            # Backend format: {"version": "1.0", "rules": [...], "default_action": ...}
             if isinstance(raw_rules, dict):
+                policy_default = raw_rules.get("default_action")
+                if policy_default in ("block", "allow"):
+                    cloud_defaults.append(policy_default)
                 raw_rules = raw_rules.get("rules", [])
 
             for rule in raw_rules:
@@ -121,17 +147,21 @@ class CloudPolicyFetcher:
                         "policy_id": str(policy.get("id", "")),
                     }
                 )
-        return rules
+        return rules, cloud_defaults
 
     def _merge(
         self,
         cloud_rules: list[dict[str, Any]],
         local_policies: list[PolicyRule],
-    ) -> list[PolicyRule]:
+        cloud_defaults: list[str],
+        local_default_action: str,
+    ) -> tuple[list[PolicyRule], str]:
         """
         Merge cloud rules with local policies (FRD-017).
 
-        Local overrides cloud by ``name`` field match.
+        Local overrides cloud by ``name`` field match. The resolved
+        ``default_action`` uses most-restrictive-wins: any side declaring
+        ``block`` makes the resolved value ``block``.
         """
         # Build set of local policy names for override detection
         local_names = {p.name for p in local_policies if p.name}
@@ -155,9 +185,11 @@ class CloudPolicyFetcher:
                 )
                 continue
 
-            # Convert require_approval → block (approval workflows out of scope — §10)
+            # MCP/hooks do not support approval workflows — downgrade to block.
             action = rule.get("action", "block")
             if action == "require_approval":
+                action = "block"
+            if action not in {"block", "allow"}:
                 action = "block"
 
             try:
@@ -167,9 +199,16 @@ class CloudPolicyFetcher:
                     value=rule.get("value"),
                     name=name,
                     policy_id=rule.get("policy_id") or None,
+                    action=action,
                 )
                 merged.append(policy_rule)
             except (ValueError, TypeError) as exc:
                 logger.warning("cloud_policy_invalid_rule", rule=name, error=str(exc))
 
-        return merged
+        # Most-restrictive-wins: any "block" forces the resolved default to "block"
+        if local_default_action == "block" or "block" in cloud_defaults:
+            resolved_default = "block"
+        else:
+            resolved_default = "allow"
+
+        return merged, resolved_default

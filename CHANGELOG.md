@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⚠️ Breaking Changes
+
+**Policy operator semantics flipped to trigger-on-match.** Operators previously
+returned `True` when a rule was *violated* (constraint model); they now return
+`True` when the rule's *condition matches* (trigger model). The matched rule's
+`action` (`block` | `allow` | `require_approval`) is the decision; the
+policy's `default_action` is the fallback when no rule matches.
+
+The boolean math changed for four operators:
+- `equals` — now matches when `field == value` (was: when `field != value`).
+- `not_equals` — now matches when `field != value` (was: when `field == value`).
+  Also newly added to the backend; previously absent from the cloud schema.
+- `in_list` — now matches when `field IS in the list` (was: when `field NOT
+  in the list`). Rules written under the old behavior as a *whitelist* with
+  `action: block` now block the listed values; swap to `not_in_list` to
+  preserve the original intent.
+- `not_in_list` — now matches when `field IS NOT in the list` (was: when
+  `field IS in the list`). Symmetric swap.
+
+`contains` and `not_contains` math is unchanged but is now **case-insensitive
+in the SDK** to match the backend (previously SDK was case-sensitive). Mixed
+case inputs like `"DROP"` vs `"drop table"` now produce the same decision in
+SDK local and SDK cloud modes.
+
+`max_value` and `min_value` on non-numeric input now return `True` (match →
+rule's action fires) instead of raising. Pairs naturally with `action: block`
+for fail-closed behavior on bad input.
+
+**Rule schema is stricter.** Both fields are now required and have no implicit
+default — Pydantic rejects YAML/JSON that omits either:
+- Per-rule `action: block | allow | require_approval` is required.
+- Per-policy `default_action: block | allow` is required.
+
+**`outcome` strings in `rule_results` telemetry unified** across SDK, MCP, and
+hooks to `{matched, no_match, skipped}`. Replaces the previous mix of
+`{triggered, passed}` (MCP/hooks) and `{blocked, triggered, passed, skipped}`
+(backend verbose response). Existing dashboards or log queries keying on the
+old strings will need updating.
+
+**MCP wrapper / hooks: cloud `default_action` now merged into wrapper config.**
+Previously each fetched cloud policy's `default_action` was silently discarded
+when its rules were merged into the local `WrapperConfig`. Now
+`CloudPolicyFetcher.fetch_and_merge` returns a tuple of
+`(rules, resolved_default_action)`, where the resolved value uses
+**most-restrictive-wins** across the wrapper's local `default_action` and every
+fetched cloud policy's. The hooks `PolicyCache` persists the resolved default
+so it survives cache hits across the per-event fresh-config-load cycle.
+
+### Migration
+
+Most existing policies need at minimum:
+1. Add `default_action: allow` or `default_action: block` at the YAML root /
+   cloud policy root.
+2. Add `action: block` (or `allow` / `require_approval`) to every rule.
+
+Rules that previously relied on the constraint model — particularly `in_list`
+or `not_in_list` paired with `action: block` to enforce an allowlist or
+blocklist — need their operator flipped to preserve original behavior:
+
+| Original intent | Old shape (constraint) | New shape (trigger) |
+|---|---|---|
+| Allowlist (allow listed; block others) | `in_list X + action: block`, default allow | `in_list X + action: allow`, **default block** *or* `not_in_list X + action: block`, default allow |
+| Denylist (block listed; allow others) | `not_in_list X + action: block`, default allow | `in_list X + action: block`, default allow |
+
+When in doubt, prefer the **denylist** shape (`default_action: allow` + a rule
+with `action: block`). It works correctly with field-scoped rules — rules whose
+`parameter` doesn't appear on every action type — because the rule simply
+skips on actions where the field is missing and the call falls through to
+`allow`. The allowlist shape (`default_action: block` + `action: allow`) blocks
+`agent_execution` and `llm_call` when the rule's field is tool-specific.
+
+See [docs/concepts/policies.md](https://docs.clyro.dev/concepts/policies) for
+the updated operator reference and rule-shape guidance.
+
 ## [0.2.0] - 2026-03-20
 
 ### Added

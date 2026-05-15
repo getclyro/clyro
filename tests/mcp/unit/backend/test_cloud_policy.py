@@ -26,7 +26,7 @@ def fetcher(http_client) -> CloudPolicyFetcher:
 
 
 def _make_local_policy(name: str, param: str = "amount", op: str = "max_value", val=1000) -> PolicyRule:
-    return PolicyRule(parameter=param, operator=op, value=val, name=name)
+    return PolicyRule(parameter=param, operator=op, value=val, name=name, action="block")
 
 
 class TestCloudPolicyFetchSuccess:
@@ -36,7 +36,7 @@ class TestCloudPolicyFetchSuccess:
     async def test_returns_local_when_no_cloud(self, fetcher: CloudPolicyFetcher, http_client) -> None:
         http_client.fetch_policies = AsyncMock(return_value={"policies": []})
         local = [_make_local_policy("local-rule")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         assert len(result) == 1
         assert result[0].name == "local-rule"
 
@@ -56,7 +56,7 @@ class TestCloudPolicyFetchSuccess:
             }],
         })
         local = [_make_local_policy("local-rule")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         assert len(result) == 2
         names = {r.name for r in result}
         assert "local-rule" in names
@@ -82,7 +82,7 @@ class TestCloudPolicyLocalOverride:
             }],
         })
         local = [_make_local_policy("shared-rule", val=100)]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         # Only local rule should be present (cloud skipped because same name)
         assert len(result) == 1
         assert result[0].value == 100
@@ -106,7 +106,7 @@ class TestCloudPolicyUnsupportedOperator:
                 },
             }],
         })
-        result = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
         assert len(result) == 0
         captured = capsys.readouterr()
         assert "cloud_policy_unsupported_operator" in captured.err
@@ -119,7 +119,7 @@ class TestCloudPolicyFailOpen:
     async def test_returns_local_on_network_error(self, fetcher: CloudPolicyFetcher, http_client) -> None:
         http_client.fetch_policies = AsyncMock(side_effect=Exception("network error"))
         local = [_make_local_policy("local")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         assert len(result) == 1
         assert result[0].name == "local"
 
@@ -132,13 +132,13 @@ class TestCloudPolicyFailOpen:
 
         http_client.fetch_policies = slow_fetch
         local = [_make_local_policy("local")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=0.01)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=0.01)
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_returns_local_when_no_agent_id(self, fetcher: CloudPolicyFetcher) -> None:
         local = [_make_local_policy("local")]
-        result = await fetcher.fetch_and_merge(None, local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge(None, local, timeout=2.0)
         assert result == local
 
 
@@ -149,7 +149,7 @@ class TestCloudPolicyUnexpectedError:
     async def test_unexpected_error_logs_type_name(self, fetcher: CloudPolicyFetcher, http_client, capsys) -> None:
         http_client.fetch_policies = AsyncMock(side_effect=RuntimeError("unexpected"))
         local = [_make_local_policy("local")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         assert len(result) == 1
         assert result[0].name == "local"
         captured = capsys.readouterr()
@@ -178,7 +178,7 @@ class TestCloudPolicyIdPropagation:
                 },
             }],
         })
-        result = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
         assert len(result) == 1
         assert result[0].policy_id == policy_uuid
 
@@ -187,7 +187,7 @@ class TestCloudPolicyIdPropagation:
         """Local YAML policies should have policy_id=None."""
         http_client.fetch_policies = AsyncMock(return_value={"policies": []})
         local = [_make_local_policy("local-rule")]
-        result = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", local, timeout=2.0)
         assert len(result) == 1
         assert result[0].policy_id is None
 
@@ -209,7 +209,7 @@ class TestCloudPolicyIdPropagation:
                 },
             }],
         })
-        result = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
         assert len(result) == 1
         # Empty string from str(policy.get("id", "")) → filtered to None by `or None`
         assert result[0].policy_id is None
@@ -233,7 +233,150 @@ class TestCloudPolicyApprovalConversion:
                 },
             }],
         })
-        result = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
+        result, _resolved = await fetcher.fetch_and_merge("agent-1", [], timeout=2.0)
         # Rule should be included (operator is valid — max_value), action converted
         assert len(result) == 1
         assert result[0].operator == "max_value"
+
+
+class TestCloudPolicyDefaultActionMerge:
+    """Merge cloud-policy default_action into wrapper's resolved default_action.
+
+    Cross-mode parity fix: each cloud policy carries its own default_action.
+    The wrapper's resolved default_action must be the most-restrictive across
+    its local default and every fetched cloud policy's default. Without this,
+    a centrally-mandated `default_action: block` is silently lost when the
+    wrapper falls back through (no rule matched).
+    """
+
+    @pytest.mark.asyncio
+    async def test_cloud_default_block_overrides_local_allow(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Cloud default_action=block forces resolved default to block."""
+        http_client.fetch_policies = AsyncMock(return_value={
+            "policies": [{
+                "name": "p1",
+                "rules": {
+                    "version": "1.0",
+                    "default_action": "block",
+                    "rules": [{
+                        "name": "rule-1",
+                        "condition": {"field": "x", "operator": "max_value", "value": 100},
+                        "action": "block",
+                    }],
+                },
+            }],
+        })
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="allow",
+        )
+        assert resolved == "block"
+
+    @pytest.mark.asyncio
+    async def test_local_block_wins_when_cloud_allow(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Local default_action=block wins even if every cloud policy is allow."""
+        http_client.fetch_policies = AsyncMock(return_value={
+            "policies": [{
+                "name": "p1",
+                "rules": {
+                    "version": "1.0",
+                    "default_action": "allow",
+                    "rules": [{
+                        "name": "rule-1",
+                        "condition": {"field": "x", "operator": "max_value", "value": 100},
+                        "action": "block",
+                    }],
+                },
+            }],
+        })
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="block",
+        )
+        assert resolved == "block"
+
+    @pytest.mark.asyncio
+    async def test_both_allow_resolves_allow(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Both local and cloud allow → resolved allow."""
+        http_client.fetch_policies = AsyncMock(return_value={
+            "policies": [{
+                "name": "p1",
+                "rules": {
+                    "version": "1.0",
+                    "default_action": "allow",
+                    "rules": [{
+                        "name": "rule-1",
+                        "condition": {"field": "x", "operator": "max_value", "value": 100},
+                        "action": "block",
+                    }],
+                },
+            }],
+        })
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="allow",
+        )
+        assert resolved == "allow"
+
+    @pytest.mark.asyncio
+    async def test_any_cloud_block_among_many_wins(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Multiple cloud policies, one with default block → resolved block."""
+        http_client.fetch_policies = AsyncMock(return_value={
+            "policies": [
+                {
+                    "name": "p1",
+                    "rules": {
+                        "version": "1.0",
+                        "default_action": "allow",
+                        "rules": [{
+                            "name": "rule-a",
+                            "condition": {"field": "x", "operator": "max_value", "value": 100},
+                            "action": "block",
+                        }],
+                    },
+                },
+                {
+                    "name": "p2",
+                    "rules": {
+                        "version": "1.0",
+                        "default_action": "block",  # one block → wins
+                        "rules": [{
+                            "name": "rule-b",
+                            "condition": {"field": "y", "operator": "max_value", "value": 50},
+                            "action": "block",
+                        }],
+                    },
+                },
+            ],
+        })
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="allow",
+        )
+        assert resolved == "block"
+
+    @pytest.mark.asyncio
+    async def test_no_cloud_policies_keeps_local_default(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Empty cloud response → resolved equals local default."""
+        http_client.fetch_policies = AsyncMock(return_value={"policies": []})
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="block",
+        )
+        assert resolved == "block"
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_keeps_local_default(
+        self, fetcher: CloudPolicyFetcher, http_client
+    ) -> None:
+        """Network failure → fail-open keeps local default unchanged."""
+        http_client.fetch_policies = AsyncMock(side_effect=Exception("network error"))
+        _rules, resolved = await fetcher.fetch_and_merge(
+            "agent-1", [], timeout=2.0, local_default_action="block",
+        )
+        assert resolved == "block"

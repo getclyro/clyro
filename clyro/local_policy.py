@@ -64,7 +64,7 @@ def _warn_stderr(msg: str) -> None:
 # Implements FRD-SOF-001
 # ---------------------------------------------------------------------------
 
-_VALID_ACTIONS = frozenset({"block", "require_approval"})
+_VALID_ACTIONS = frozenset({"block", "allow", "require_approval"})
 
 
 class SDKPolicyRule(PolicyRule):
@@ -73,7 +73,7 @@ class SDKPolicyRule(PolicyRule):
 
     Inherits the 5 base fields (parameter, operator, value, name, policy_id)
     and operator validation from ``PolicyRule``.  Adds ``action`` which
-    controls enforcement behaviour when the rule is violated.
+    controls the decision taken when the rule's condition matches.
 
     ``model_config = ConfigDict(extra="ignore")`` allows shared YAML files
     to include future MCP-only fields without breaking the SDK.
@@ -82,16 +82,18 @@ class SDKPolicyRule(PolicyRule):
     model_config = ConfigDict(extra="ignore")
 
     action: str = Field(
-        default="block",
-        description="Enforcement action when rule is violated: 'block' or 'require_approval'",
+        description=(
+            "Required. Decision when condition matches: 'block', 'allow', or 'require_approval'."
+        ),
     )
 
-    # Implements FRD-SOF-001: action value validation
     @field_validator("action")
     @classmethod
     def validate_action(cls, v: str) -> str:
         if v not in _VALID_ACTIONS:
-            raise ValueError(f"Unknown policy action: '{v}'. Supported: block, require_approval")
+            raise ValueError(
+                f"Unknown policy action: '{v}'. Supported: block, allow, require_approval"
+            )
         return v
 
 
@@ -129,6 +131,20 @@ class SDKPolicyConfig(BaseModel):
     version: int = Field(description="Schema version, must be 1")
     global_: GlobalPolicies | None = Field(default=None, alias="global")
     actions: dict[str, ActionPolicies] | None = Field(default=None)
+    default_action: str = Field(
+        description=(
+            "Required. Decision when no rule's condition matches: 'block' or 'allow'. "
+            "Use 'allow' for a denylist (rules block specific cases) or 'block' "
+            "for an allowlist (rules allow specific cases)."
+        ),
+    )
+
+    @field_validator("default_action")
+    @classmethod
+    def validate_default_action(cls, v: str) -> str:
+        if v not in {"block", "allow"}:
+            raise ValueError(f"Unknown default_action '{v}'. Allowed: ['allow', 'block']")
+        return v
 
     @field_validator("version")
     @classmethod
@@ -151,20 +167,35 @@ _DEFAULT_TEMPLATE = """\
 # Rules are evaluated per action type (llm_call, tool_call, agent_execution)
 # and globally. Per-action rules are checked first, then global rules.
 #
-# Supported operators:
-#   max_value, min_value, equals, not_equals,
-#   in_list, not_in_list, contains, not_contains
+# Semantics:
+# - Each rule has an `action` (block | allow | require_approval). When a
+#   rule's condition matches, that rule's `action` is the decision and
+#   evaluation short-circuits (first match wins).
+# - `default_action` (block | allow) at the top level decides the outcome
+#   when no rule's condition matches. Omit it to default to 'allow'.
 #
-# Example:
+# Supported operators (each matches when the predicate holds):
+#   max_value          — matches when field > value
+#   min_value          — matches when field < value
+#   equals             — matches when field == value
+#   not_equals         — matches when field != value
+#   in_list            — matches when field IS in the list
+#   not_in_list        — matches when field is NOT in the list
+#   contains           — matches when field CONTAINS the value
+#   not_contains       — matches when field does NOT contain the value
+#
+# Example — whitelist allowed models (block anything not in the list):
 # actions:
 #   llm_call:
 #     policies:
 #       - parameter: "model"
-#         operator: "in_list"
+#         operator: "not_in_list"
 #         value: ["claude-sonnet-4-5-20250514"]
 #         name: "allowed_models"
+#         action: "block"
 
 version: 1
+default_action: allow
 
 global:
   policies: []
@@ -213,7 +244,7 @@ def load_sdk_policies() -> SDKPolicyConfig:
     if _cache_populated:
         return _loaded_config  # type: ignore[return-value]
 
-    empty_config = SDKPolicyConfig(version=1)
+    empty_config = SDKPolicyConfig(version=1, default_action="allow")
 
     policy_path = _get_policy_path()
 
@@ -367,8 +398,12 @@ class SDKLocalPolicyEvaluator:
         """
         Core evaluation logic shared by sync and async paths.
 
-        Implements FRD-SOF-002 evaluation logic and FRD-SOF-003 ordering:
-        per-action-type rules first, then global rules.
+        Semantics:
+        - Each rule has an ``action`` (block | allow | require_approval).
+        - When a rule's condition matches → apply that rule's action and
+          short-circuit (first match wins).
+        - When no rule matches → apply ``config.default_action``
+          (defaults to "allow" when not set).
         """
         config = load_sdk_policies()
 
@@ -379,22 +414,23 @@ class SDKLocalPolicyEvaluator:
         if config.global_ is not None:
             all_rules.extend(config.global_.policies)
 
-        # Zero rules → allow (FRD-SOF-002)
+        default_action = config.default_action
+
+        # Zero rules → default_action
         if not all_rules:
             result = LocalPolicyEvaluationResult(
-                violated=False,
-                decision="allow",
+                violated=(default_action == "block"),
+                decision=default_action,
             )
             self._emit_policy_event(result, action_type, parameters, session_id, step_number)
             return result
 
         rule_results: list[dict[str, Any]] = []
-        violated = False
+        final_decision: str | None = None
         violation_details: dict[str, Any] | None = None
 
         for rule in all_rules:
             try:
-                # Resolve parameter
                 found, actual = _resolve_local_parameter(parameters, rule.parameter)
                 if not found:
                     rule_results.append(
@@ -407,49 +443,40 @@ class SDKLocalPolicyEvaluator:
                     )
                     continue
 
-                # Evaluate rule
-                is_violated = _evaluate_local_rule(rule, actual)
+                is_matched = _evaluate_local_rule(rule, actual)
 
-                if not is_violated:
+                if not is_matched:
                     rule_results.append(
                         self._build_rule_result(
                             rule,
                             actual=actual,
-                            outcome="passed",
+                            outcome="no_match",
                             action_taken="allow",
                         )
                     )
                     continue
 
-                # Implements FRD-SOF-002: action-based enforcement
-                should_block = self._enforce_violated_rule(rule, action_type)
-                if not should_block:
-                    # require_approval was approved → continue to next rule
-                    rule_results.append(
-                        self._build_rule_result(
-                            rule,
-                            actual=actual,
-                            outcome="approved",
-                            action_taken="allow",
-                        )
-                    )
-                    continue
-
-                # Block: record and short-circuit
-                violated = True
-                violation_details = self._build_violation_details(rule, actual, action_type)
+                # Condition matched → apply rule's action
+                decision = self._decide_matched_rule(rule, action_type)
                 rule_results.append(
                     self._build_rule_result(
                         rule,
                         actual=actual,
-                        outcome="triggered",
-                        action_taken="block",
+                        outcome="matched",
+                        action_taken=decision,
                     )
                 )
-                break
+
+                if decision == "block":
+                    final_decision = "block"
+                    violation_details = self._build_violation_details(rule, actual, action_type)
+                    break
+                if decision == "allow":
+                    final_decision = "allow"
+                    break
 
             except Exception as exc:
-                # Fail-open per rule: skip and continue (FRD-SOF-002)
+                # Fail-open per rule: skip and continue
                 logger.warning(
                     "clyro_local_policy_rule_error",
                     rule_name=rule.name,
@@ -467,9 +494,24 @@ class SDKLocalPolicyEvaluator:
                 )
                 continue
 
+        if final_decision is None:
+            final_decision = default_action
+            # Synthesize details for the default_action=block fall-through so
+            # evaluate_sync can raise an informative PolicyViolationError.
+            if final_decision == "block" and violation_details is None:
+                violation_details = {
+                    "policy_id": "default_action",
+                    "rule_name": "default_action",
+                    "tool_name": action_type,
+                    "parameter": None,
+                    "operator": "default_action",
+                    "expected": None,
+                    "actual": None,
+                }
+
         result = LocalPolicyEvaluationResult(
-            violated=violated,
-            decision="block" if violated else "allow",
+            violated=(final_decision == "block"),
+            decision=final_decision,
             violation_details=violation_details,
             rule_results=rule_results,
         )
@@ -544,17 +586,21 @@ class SDKLocalPolicyEvaluator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _enforce_violated_rule(self, rule: SDKPolicyRule, action_type: str) -> bool:
-        """Decide whether a violated rule should block.
+    def _decide_matched_rule(self, rule: SDKPolicyRule, action_type: str) -> str:
+        """Decide what to do when a rule's condition matches.
 
-        Returns True if the action should be blocked, False if approved
-        (only possible for ``require_approval`` with an approval handler).
+        Returns the final decision: "block" or "allow".
+        For ``require_approval``, prompts the approval handler — approved
+        becomes "allow", denied becomes "block".
         """
-        if rule.action != "require_approval":
-            return True  # "block" → always block
+        if rule.action == "block":
+            return "block"
+        if rule.action == "allow":
+            return "allow"
 
+        # require_approval
         if self._approval_handler is None:
-            return True  # No handler (non-TTY) → treat as block
+            return "block"  # No handler (non-TTY) → treat as block
 
         decision_obj = PolicyDecision(
             decision="require_approval",
@@ -566,7 +612,7 @@ class SDKLocalPolicyEvaluator:
             approved = self._approval_handler(decision_obj, action_type)
         except Exception:
             approved = False
-        return not approved
+        return "allow" if approved else "block"
 
     @staticmethod
     def _build_rule_result(

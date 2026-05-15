@@ -29,7 +29,7 @@ def _make_router(
     prevention_result=None,
 ) -> tuple[MessageRouter, AsyncMock, MagicMock, MagicMock]:
     """Build a MessageRouter with mocked dependencies."""
-    config = WrapperConfig()
+    config = WrapperConfig(default_action="allow")
     session = McpSession()
     transport = MagicMock(spec=StdioTransport)
     transport.write_to_child = AsyncMock()

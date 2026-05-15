@@ -1031,7 +1031,7 @@ class TestPolicyEvaluatorLocalPreCheck:
             name="max_amount", action="block",
         )
         sdk_config = SDKPolicyConfig.model_validate(
-            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+            {"default_action": "allow", "version": 1, "global": {"policies": [rule.model_dump()]}},
         )
 
         evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
@@ -1065,7 +1065,7 @@ class TestPolicyEvaluatorLocalPreCheck:
             name="max_amount", action="block",
         )
         sdk_config = SDKPolicyConfig.model_validate(
-            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+            {"default_action": "allow", "version": 1, "global": {"policies": [rule.model_dump()]}},
         )
 
         evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
@@ -1091,7 +1091,7 @@ class TestPolicyEvaluatorLocalPreCheck:
         """When local YAML has zero rules, backend is called directly."""
         from clyro.local_policy import SDKPolicyConfig, reset_sdk_policy_cache
 
-        empty_config = SDKPolicyConfig(version=1)
+        empty_config = SDKPolicyConfig(version=1, default_action="allow")
         evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)
 
         reset_sdk_policy_cache()
@@ -1121,7 +1121,7 @@ class TestPolicyEvaluatorLocalPreCheck:
             parameter="model", operator="in_list", value=["gpt-4"],
             name="allowed_models", action="block",
         )
-        sdk_config = SDKPolicyConfig.model_validate({
+        sdk_config = SDKPolicyConfig.model_validate({"default_action": "allow",
             "version": 1,
             "actions": {"llm_call": {"policies": [llm_rule.model_dump()]}},
             "global": {"policies": []},
@@ -1180,7 +1180,7 @@ class TestPolicyEvaluatorLocalPreCheck:
             name="max_amount", action="block",
         )
         sdk_config = SDKPolicyConfig.model_validate(
-            {"version": 1, "global": {"policies": [rule.model_dump()]}},
+            {"default_action": "allow", "version": 1, "global": {"policies": [rule.model_dump()]}},
         )
 
         evaluator = PolicyEvaluator(policy_config, agent_id, approval_handler=None)

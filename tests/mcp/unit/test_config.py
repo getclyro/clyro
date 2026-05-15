@@ -72,7 +72,7 @@ class TestConfigUnknownKeys:
 
     def test_unknown_keys_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("global:\n  max_steps: 10\nfuture_section:\n  x: 1\n")
+            f.write("default_action: allow\nglobal:\n  max_steps: 10\nfuture_section:\n  x: 1\n")
             path = f.name
         try:
             cfg = load_config(path)
@@ -88,6 +88,7 @@ class TestConfigValidLoad:
 
     def test_full_config(self) -> None:
         yaml_text = """\
+default_action: allow
 global:
   max_steps: 25
   max_cost_usd: 5.0
@@ -98,6 +99,7 @@ global:
     - parameter: "*.amount"
       operator: max_value
       value: 1000
+      action: block
 
 tools:
   query_database:
@@ -106,6 +108,7 @@ tools:
         operator: contains
         value: DROP
         name: no-drop
+        action: block
 
 audit:
   log_path: /tmp/test-audit.jsonl
@@ -150,3 +153,27 @@ audit:
             assert exc_info.value.code == 1
         finally:
             os.unlink(path)
+
+
+class TestDefaultActionRequired:
+    """Regression: default_action is required on WrapperConfig.
+
+    Locks the contract — if anyone re-introduces a default value for
+    default_action, this test will fail and force a deliberate change.
+    """
+
+    def test_missing_default_action_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from clyro.config import WrapperConfig
+
+        with pytest.raises(ValidationError, match="default_action"):
+            WrapperConfig.model_validate({"global": {"max_steps": 50}})
+
+    def test_bare_construction_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from clyro.config import WrapperConfig
+
+        with pytest.raises(ValidationError, match="default_action"):
+            WrapperConfig()

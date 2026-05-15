@@ -71,7 +71,7 @@ class TestEnrichToolInput:
 class TestEvaluateAllow:
     def test_allow_on_clean_input(self, mock_sessions_dir, tmp_path):
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {},
@@ -93,7 +93,7 @@ class TestEvaluateBlockStepLimit:
             session_id="test-session", step_count=50,
         )
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0},
             "audit": {},
             "backend": {},
@@ -116,7 +116,7 @@ class TestEvaluateBlockCost:
             session_id="test-session", accumulated_cost_usd=9.99,
         )
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0, "cost_per_token_usd": 1.0},
             "audit": {},
             "backend": {},
@@ -136,13 +136,12 @@ class TestEvaluateBlockCost:
 class TestEvaluateBlockPolicy:
     def test_block_on_policy_violation(self, mock_sessions_dir, tmp_path):
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {
                 "max_steps": 50,
                 "max_cost_usd": 10.0,
                 "policies": [
-                    {
-                        "parameter": "command",
+                    {"action": "block", "parameter": "command",
                         "operator": "contains",
                         "value": "rm -rf",
                         "name": "Block recursive force delete",
@@ -168,7 +167,7 @@ class TestEvaluateBlockPerToolPolicy:
     def test_block_on_per_tool_policy(self, mock_sessions_dir, tmp_path):
         """Per-tool policies in merged list should be evaluated (❌-2 fix)."""
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {
                 "max_steps": 50,
                 "max_cost_usd": 10.0,
@@ -177,8 +176,7 @@ class TestEvaluateBlockPerToolPolicy:
             "tools": {
                 "Bash": {
                     "policies": [
-                        {
-                            "parameter": "command",
+                        {"action": "block", "parameter": "command",
                             "operator": "contains",
                             "value": "sudo",
                             "name": "Block sudo commands",
@@ -203,13 +201,12 @@ class TestEvaluateBlockPerToolPolicy:
     def test_both_global_and_per_tool_policies(self, mock_sessions_dir, tmp_path):
         """Both global and per-tool policies should be evaluated."""
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {
                 "max_steps": 50,
                 "max_cost_usd": 10.0,
                 "policies": [
-                    {
-                        "parameter": "command",
+                    {"action": "block", "parameter": "command",
                         "operator": "contains",
                         "value": "rm -rf",
                         "name": "Block rm -rf globally",
@@ -219,8 +216,7 @@ class TestEvaluateBlockPerToolPolicy:
             "tools": {
                 "Bash": {
                     "policies": [
-                        {
-                            "parameter": "command",
+                        {"action": "block", "parameter": "command",
                             "operator": "contains",
                             "value": "sudo",
                             "name": "Block sudo for Bash",
@@ -247,7 +243,7 @@ class TestEvaluateFailOpen:
         """Unexpected exceptions should result in allow (caller handles via exit code)."""
         mock_sessions_dir["load_state"].side_effect = RuntimeError("unexpected")
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {},
             "backend": {},
@@ -268,6 +264,7 @@ class TestEvaluateTraceEvents:
 
     def _config_with_api_key(self, tmp_path, **overrides):
         base = {
+            "default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {"api_key": "test-key"},
@@ -378,8 +375,7 @@ class TestEvaluateTraceEvents:
         config = self._config_with_api_key(tmp_path, **{
             "global": {
                 "max_steps": 50, "max_cost_usd": 10.0,
-                "policies": [{
-                    "parameter": "command", "operator": "contains",
+                "policies": [{"action": "block", "parameter": "command", "operator": "contains",
                     "value": "rm -rf", "name": "Block rm -rf",
                 }],
             },
@@ -401,7 +397,7 @@ class TestEvaluateTraceEvents:
     def test_no_trace_without_api_key(self, mock_enqueue, mock_sessions_dir, tmp_path):
         """No trace events emitted when no API key configured."""
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {},

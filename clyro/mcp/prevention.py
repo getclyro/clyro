@@ -8,12 +8,15 @@
 Orchestrate the four-stage evaluation pipeline for each ``tools/call``
 request:
 
-1. LoopDetector  → block if pattern repeats ≥ threshold
-2. StepLimit     → block if step_count > max_steps
-3. CostTracker   → block if budget would be exceeded
-4. PolicyEvaluator → block if a business rule is violated
+1. LoopDetector    → block if call pattern repeats ≥ threshold
+2. StepLimit       → block if step_count > max_steps
+3. CostTracker     → block if budget would be exceeded
+4. PolicyEvaluator → apply the matched rule's ``action`` (block | allow |
+                     require_approval) when a parameter-level rule
+                     matches; falls back to ``config.default_action``
+                     when no rule matches
 
-Short-circuits on the first violation.
+Short-circuits on the first stage that produces a blocking decision.
 """
 
 from __future__ import annotations

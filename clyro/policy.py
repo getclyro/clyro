@@ -381,12 +381,15 @@ class PolicyEvaluator:
 
         Loads rules from ~/.clyro/sdk/policies.yaml (same file used in
         local mode by SDKLocalPolicyEvaluator) and evaluates them using
-        the shared 8-operator evaluator.  Raises PolicyViolationError if
-        any rule is violated.
+        the shared 8-operator evaluator.
+
+        Semantics: when a rule's condition matches, the rule's ``action``
+        (block | allow | require_approval) is the final decision and we
+        short-circuit. When no rule matches, ``config.default_action``
+        applies (defaults to "allow").
 
         Fail-open: if the YAML cannot be loaded or a single rule throws,
-        evaluation continues silently (matches SDKLocalPolicyEvaluator
-        behavior).
+        evaluation continues silently.
         """
         import clyro.local_policy as _lp
 
@@ -394,16 +397,25 @@ class PolicyEvaluator:
             config = _lp.load_sdk_policies()
         except Exception:
             return
-        # Collect rules scoped to this action_type, then global (FRD-SOF-003)
         all_rules: list[Any] = []
         if config.actions and action_type in config.actions:
             all_rules.extend(config.actions[action_type].policies)
         if config.global_ is not None:
             all_rules.extend(config.global_.policies)
 
+        default_action = config.default_action
+
         if not all_rules:
+            if default_action == "block":
+                raise PolicyViolationError(
+                    rule_id="local",
+                    rule_name="default_action",
+                    message=f"Policy default_action=block: blocked {action_type}",
+                    action_type=action_type,
+                )
             return
 
+        matched = False
         for rule in all_rules:
             try:
                 found, actual = _resolve_local_parameter(parameters, rule.parameter)
@@ -413,8 +425,13 @@ class PolicyEvaluator:
                 if not _evaluate_local_rule(rule, actual):
                     continue
 
-                # Rule violated — check action field for require_approval
+                # Condition matched — apply rule's action
+                matched = True
                 action = getattr(rule, "action", "block")
+
+                if action == "allow":
+                    return  # short-circuit allow
+
                 if action == "require_approval" and self._approval_handler is not None:
                     decision_obj = PolicyDecision(
                         decision="require_approval",
@@ -427,9 +444,9 @@ class PolicyEvaluator:
                     except Exception:
                         approved = False
                     if approved:
-                        continue
+                        return  # short-circuit allow
 
-                # Block
+                # action == "block" (or require_approval denied)
                 raise PolicyViolationError(
                     rule_id=rule.policy_id or "local",
                     rule_name=rule.name or f"{rule.operator}({rule.parameter})",
@@ -440,15 +457,23 @@ class PolicyEvaluator:
                     action_type=action_type,
                 )
             except PolicyViolationError:
-                raise  # Re-raise policy violations
+                raise
             except Exception as exc:
-                # Fail-open per rule: skip and continue
                 logger.warning(
                     "local_policy_rule_error",
                     rule_name=getattr(rule, "name", "unknown"),
                     error=str(exc),
                 )
                 continue
+
+        # No rule matched → apply default_action
+        if not matched and default_action == "block":
+            raise PolicyViolationError(
+                rule_id="local",
+                rule_name="default_action",
+                message=f"Policy default_action=block: blocked {action_type}",
+                action_type=action_type,
+            )
 
     @property
     def is_enabled(self) -> bool:
@@ -819,7 +844,9 @@ def _evaluate_local_rule(rule: Any, actual: Any) -> bool:
     """
     Evaluate a single local policy rule against a resolved value.
 
-    Returns ``True`` if the rule is **violated** (call should be blocked).
+    Returns ``True`` if the rule's **condition matches** (caller then applies
+    the rule's ``action``: block or allow). Returns ``False`` if the condition
+    does not match (caller continues to next rule or applies default_action).
     Supports 8 operators: max_value, min_value, equals, not_equals,
     in_list, not_in_list, contains, not_contains.
     """
@@ -830,6 +857,8 @@ def _evaluate_local_rule(rule: Any, actual: Any) -> bool:
         try:
             return float(actual) > float(expected)
         except (TypeError, ValueError):
+            # Invalid numeric input — treat as match so the rule's action
+            # fires (fail-closed for action=block; explicit for action=allow).
             return True
 
     if op == "min_value":
@@ -839,30 +868,32 @@ def _evaluate_local_rule(rule: Any, actual: Any) -> bool:
             return True
 
     if op == "equals":
-        return actual != expected
+        return actual == expected
 
     if op == "not_equals":
-        return actual == expected
+        return actual != expected
 
     if op == "in_list":
         if not isinstance(expected, list):
             return False
-        return actual not in expected
+        return actual in expected
 
     if op == "not_in_list":
         if not isinstance(expected, list):
             return False
-        return actual in expected
+        return actual not in expected
 
     if op == "contains":
+        # Case-insensitive substring match (matches backend behavior).
         try:
-            return str(expected) in str(actual)
+            return str(expected).lower() in str(actual).lower()
         except (TypeError, ValueError):
             return False
 
     if op == "not_contains":
+        # Case-insensitive substring match (matches backend behavior).
         try:
-            return str(expected) not in str(actual)
+            return str(expected).lower() not in str(actual).lower()
         except (TypeError, ValueError):
             return False
 
@@ -877,10 +908,15 @@ class LocalPolicyEvaluator:
     Supports 8 operators: max_value, min_value, equals, not_equals,
     in_list, not_in_list, contains, not_contains.
 
+    Semantics:
+    - Each rule has an ``action`` (block | allow). When a rule's condition
+      matches, that rule's action is the final decision (first match wins).
+    - When no rule matches, ``config.default_action`` is used (defaults to
+      "allow").
+
     Evaluation order:
     1. Per-tool policies (matched by exact tool name).
     2. Global policies.
-    A violation from either blocks the call.
     """
 
     OPERATORS = frozenset(
@@ -912,12 +948,13 @@ class LocalPolicyEvaluator:
         Evaluate arguments against all applicable rules.
 
         Returns:
-            ``(violated, details, rule_results)``
+            ``(blocked, details, rule_results)`` — ``blocked`` is True when
+            the final decision is "block" (kept as the first tuple element
+            for backwards-compatible callers that named it ``violated``).
         """
         args = arguments or {}
-        enforcement_violated = False
-        enforcement_details: dict[str, Any] = {}
         rule_results: list[dict[str, Any]] = []
+        block_details: dict[str, Any] = {}
 
         all_rules: list[Any] = []
         tool_cfg = self._config.tools.get(tool_name)
@@ -925,14 +962,30 @@ class LocalPolicyEvaluator:
             all_rules.extend(tool_cfg.policies)
         all_rules.extend(self._config.global_.policies)
 
+        default_action = self._config.default_action
+        final_decision: str | None = None
+
         for rule in all_rules:
             try:
                 rule_result = self._build_rule_result(rule, tool_name, args)
                 rule_results.append(rule_result)
 
-                if not enforcement_violated and rule_result["outcome"] == "triggered":
-                    enforcement_violated = True
-                    enforcement_details = {
+                if final_decision is not None:
+                    continue
+
+                if rule_result["outcome"] != "matched":
+                    continue
+
+                # Condition matched → apply rule's action
+                rule_action = getattr(rule, "action", "block")
+                # MCP/hooks do not support approval workflows; treat as block.
+                if rule_action == "require_approval":
+                    rule_action = "block"
+
+                final_decision = rule_action
+
+                if final_decision == "block":
+                    block_details = {
                         "rule_name": rule.name or f"{rule.operator}({rule.parameter})",
                         "tool_name": tool_name,
                         "parameter": rule.parameter,
@@ -944,7 +997,23 @@ class LocalPolicyEvaluator:
             except Exception:
                 pass  # Graceful degradation
 
-        return enforcement_violated, enforcement_details, rule_results
+        if final_decision is None:
+            final_decision = default_action
+            # Synthesize details for the default_action=block fall-through so
+            # downstream error messages are informative rather than empty.
+            if final_decision == "block":
+                block_details = {
+                    "rule_name": "default_action",
+                    "tool_name": tool_name,
+                    "parameter": None,
+                    "operator": "default_action",
+                    "expected": None,
+                    "actual": None,
+                    "policy_id": None,
+                }
+
+        blocked = final_decision == "block"
+        return blocked, block_details, rule_results
 
     @staticmethod
     def _build_rule_result(
@@ -970,10 +1039,19 @@ class LocalPolicyEvaluator:
                 "message": None,
             }
 
-        violated = _evaluate_local_rule(rule, actual)
-        outcome = "triggered" if violated else "passed"
-        action = "block" if violated else "allow"
-        message = f"Blocked: {rule.name or rule.parameter}" if violated else None
+        is_matched = _evaluate_local_rule(rule, actual)
+        rule_action = getattr(rule, "action", "block")
+        if rule_action == "require_approval":
+            rule_action = "block"
+
+        if is_matched:
+            outcome = "matched"
+            action_taken = rule_action
+            message = f"Blocked: {rule.name or rule.parameter}" if rule_action == "block" else None
+        else:
+            outcome = "no_match"
+            action_taken = "allow"
+            message = None
 
         return {
             "policy_id": rule.policy_id,
@@ -985,6 +1063,6 @@ class LocalPolicyEvaluator:
             "threshold": rule.value,
             "actual_value": actual,
             "outcome": outcome,
-            "action": action,
+            "action": action_taken,
             "message": message,
         }

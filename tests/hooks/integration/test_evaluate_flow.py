@@ -28,15 +28,14 @@ def isolated_sessions(tmp_path):
 @pytest.fixture
 def config_path(tmp_path):
     """Create a test config file."""
-    config_data = {
+    config_data = {"default_action": "allow",
         "global": {
             "max_steps": 10,
             "max_cost_usd": 1.0,
             "cost_per_token_usd": 0.00001,
             "loop_detection": {"threshold": 3, "window": 5},
             "policies": [
-                {
-                    "parameter": "command",
+                {"action": "block", "parameter": "command",
                     "operator": "contains",
                     "value": "rm -rf",
                     "name": "Block recursive force delete",

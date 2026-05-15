@@ -178,13 +178,18 @@ async def _init_backend(config, session, server_command):
 
     # 2b. Cloud policy fetch + merge (FRD-017)
     fetcher = CloudPolicyFetcher(http_client=http_client)
-    merged_policies = await fetcher.fetch_and_merge(
+    merged_policies, resolved_default = await fetcher.fetch_and_merge(
         agent_id=str(session.agent_id) if session.agent_id else None,
         local_policies=config.global_.policies,
         timeout=2.0,
+        local_default_action=config.default_action,
     )
-    # Update config with merged policies (cloud + local)
+    # Update config with merged policies (cloud + local) and the resolved
+    # default_action. Reconciliation uses most-restrictive-wins: any
+    # cloud policy with default_action=block forces the wrapper default
+    # to block, preventing silent loss of a centrally-mandated denylist.
     config.global_.policies = merged_policies
+    config.default_action = resolved_default
 
     # Promote cloud policies that map to built-in prevention stages (FRD-017)
     # Cloud rules for "cost" and "step_number" need to feed into CostTracker

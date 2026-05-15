@@ -33,11 +33,20 @@ class HookOutput(BaseModel):
 
 
 class PolicyCache(BaseModel):
-    """Cached cloud policy state within a session."""
+    """Cached cloud policy state within a session.
+
+    ``resolved_default_action`` captures the most-restrictive merge of the
+    wrapper's local ``default_action`` and every fetched cloud policy's own
+    ``default_action``. Cached alongside the rules so a cache hit can restore
+    the merged default — without this, fresh config loads on each event
+    would silently revert to the local-only default and drop the cloud's
+    centrally-mandated block.
+    """
 
     fetched_at: datetime | None = None
     ttl_seconds: int = 300
     merged_policies: list[dict[str, Any]] = Field(default_factory=list)
+    resolved_default_action: str | None = None
 
 
 class CircuitBreakerSnapshot(BaseModel):
