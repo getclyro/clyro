@@ -495,19 +495,33 @@ class SDKLocalPolicyEvaluator:
                 continue
 
         if final_decision is None:
-            final_decision = default_action
-            # Synthesize details for the default_action=block fall-through so
-            # evaluate_sync can raise an informative PolicyViolationError.
-            if final_decision == "block" and violation_details is None:
-                violation_details = {
-                    "policy_id": "default_action",
-                    "rule_name": "default_action",
-                    "tool_name": action_type,
-                    "parameter": None,
-                    "operator": "default_action",
-                    "expected": None,
-                    "actual": None,
-                }
+            # If every rule was skipped because its parameter wasn't present
+            # on this action, the policy is inapplicable here — bypass
+            # ``default_action`` and return allow. This prevents
+            # ``default_action: block`` from firing on action types (like
+            # ``agent_execution`` and ``llm_call``) where a tool-arg-scoped
+            # rule could never have matched in the first place. Distinct
+            # from the zero-rules branch above, which preserves the
+            # "block everything by default" idiom.
+            all_skipped = bool(rule_results) and all(
+                r["outcome"] == "skipped" for r in rule_results
+            )
+            if all_skipped:
+                final_decision = "allow"
+            else:
+                final_decision = default_action
+                # Synthesize details for the default_action=block fall-through so
+                # evaluate_sync can raise an informative PolicyViolationError.
+                if final_decision == "block" and violation_details is None:
+                    violation_details = {
+                        "policy_id": "default_action",
+                        "rule_name": "default_action",
+                        "tool_name": action_type,
+                        "parameter": None,
+                        "operator": "default_action",
+                        "expected": None,
+                        "actual": None,
+                    }
 
         result = LocalPolicyEvaluationResult(
             violated=(final_decision == "block"),

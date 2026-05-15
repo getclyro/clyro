@@ -9,15 +9,20 @@ Fetch policies from the Clyro backend API on startup and merge with
 local YAML policies.
 
 Merge rules (FRD-017):
-- Local YAML policies override cloud policies with the same ``name``.
+- Local YAML policies override cloud policies with the same ``name``
+  (rule-level override by name).
 - Cloud policies with names not present in local YAML are added.
 - Cloud policies with unsupported operators are skipped with warning.
-- ``require_approval`` actions are converted to ``block`` (§10).
+- ``require_approval`` actions are converted to ``block`` (§10) — MCP /
+  hooks do not run an approval handler.
 - Each fetched cloud policy carries its own ``default_action``. The
-  resolved ``default_action`` for the wrapper is computed with
-  most-restrictive-wins: if the local wrapper or any cloud policy sets
-  ``default_action: block``, the resolved value is ``block``; otherwise
-  ``allow``.
+  resolved ``default_action`` for the wrapper uses **cloud-wins**
+  precedence: when any cloud policy declares a ``default_action``, the
+  cloud's value is authoritative and the local wrapper's ``default_action``
+  is ignored. Among multiple cloud defaults, the most-restrictive among
+  cloud (``block`` over ``allow``) wins. The local ``default_action``
+  applies only when no cloud policies were fetched (none attached to the
+  agent, or fetch failed — preserving fail-open behavior).
 - Fetch has a hard 2-second timeout (fail-open to local-only).
 """
 
@@ -80,8 +85,11 @@ class CloudPolicyFetcher:
 
         Returns:
             ``(merged_rule_list, resolved_default_action)``. The resolved
-            default uses most-restrictive-wins across the local and every
-            fetched cloud policy. On any fetch failure: returns
+            default uses **cloud-wins** precedence: when the cloud declared
+            any ``default_action``, it overrides the local default; if
+            multiple cloud policies disagree, the most-restrictive among
+            cloud wins. Local default applies only when no cloud defaults
+            were fetched. On any fetch failure: returns
             ``(local_policies, local_default_action)`` unchanged.
         """
         try:
@@ -159,9 +167,16 @@ class CloudPolicyFetcher:
         """
         Merge cloud rules with local policies (FRD-017).
 
-        Local overrides cloud by ``name`` field match. The resolved
-        ``default_action`` uses most-restrictive-wins: any side declaring
-        ``block`` makes the resolved value ``block``.
+        Local overrides cloud by ``name`` field match for individual rules.
+
+        Resolved ``default_action`` uses **cloud-wins** precedence: when the
+        cloud declared any ``default_action`` (one or more cloud policies
+        attached to the agent), the cloud's value is authoritative — the
+        local wrapper's ``default_action`` is ignored. If multiple cloud
+        policies declare conflicting defaults, the most-restrictive among
+        cloud wins (``block`` over ``allow``). The local default applies
+        only when no cloud defaults were fetched (no policies for this
+        agent, or fetch failed — preserving fail-open local-only behavior).
         """
         # Build set of local policy names for override detection
         local_names = {p.name for p in local_policies if p.name}
@@ -205,10 +220,13 @@ class CloudPolicyFetcher:
             except (ValueError, TypeError) as exc:
                 logger.warning("cloud_policy_invalid_rule", rule=name, error=str(exc))
 
-        # Most-restrictive-wins: any "block" forces the resolved default to "block"
-        if local_default_action == "block" or "block" in cloud_defaults:
-            resolved_default = "block"
+        # Cloud-wins: when the cloud declared any default_action, the cloud's
+        # value is authoritative and the local default is ignored. Among
+        # multiple cloud defaults, the most-restrictive (block) wins.
+        # Fall back to the local default only when no cloud defaults exist.
+        if cloud_defaults:
+            resolved_default = "block" if "block" in cloud_defaults else "allow"
         else:
-            resolved_default = "allow"
+            resolved_default = local_default_action
 
         return merged, resolved_default

@@ -62,8 +62,10 @@ async def _fetch_cloud_policies(
     """Fetch and merge cloud policies. Fail-open on any error.
 
     Returns ``(merged_rules, resolved_default_action)``. The resolved default
-    is reconciled across the wrapper's local ``default_action`` and each
-    cloud policy's ``default_action`` (most-restrictive wins).
+    uses **cloud-wins** precedence: when any cloud policy declares a
+    ``default_action``, it overrides the wrapper's local default. Among
+    multiple cloud defaults, the most-restrictive wins. The local default
+    applies only when no cloud policies were fetched.
     """
     api_key = config.resolved_api_key
     if not api_key:
@@ -113,8 +115,9 @@ def get_merged_policies(config: HookConfig, state: SessionState) -> list[PolicyR
     FRD-HK-007: Uses TTL cache from session state. Falls back to local on failure.
 
     As a side effect, also updates ``config.default_action`` to the resolved
-    value after reconciling the wrapper's local ``default_action`` against
-    each fetched cloud policy's ``default_action`` (most-restrictive wins).
+    value. Precedence is **cloud-wins**: the cloud's ``default_action``
+    overrides the wrapper's local default whenever any cloud policy declared
+    one. The local default only applies when no cloud policies were fetched.
     """
     # Collect all local policies (global + per-tool)
     local_policies: list[PolicyRule] = list(config.global_.policies)
@@ -134,10 +137,10 @@ def get_merged_policies(config: HookConfig, state: SessionState) -> list[PolicyR
         cached = _policies_from_cache(state.policy_cache)
         if cached is not None:
             # Restore the merged default_action from the cache so a fresh
-            # config load on each event still honors the cloud policy's
-            # default_action. Without this, the cache hit would revert to
-            # the local-only default and drop the cloud's centrally-mandated
-            # block (or allow).
+            # config load on each event still honors the cloud's
+            # default_action (cloud-wins precedence). Without this, a cache
+            # hit would revert to the local-only default and drop the
+            # cloud's centrally-mandated value.
             cached_default = state.policy_cache.resolved_default_action
             if cached_default in ("block", "allow"):
                 config.default_action = cached_default

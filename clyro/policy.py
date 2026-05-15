@@ -377,16 +377,26 @@ class PolicyEvaluator:
         action_type: str,
         parameters: dict[str, Any],
     ) -> None:
-        """Evaluate local YAML policies before calling the backend.
+        """Evaluate local YAML policies as a pre-flight check before calling the backend.
 
         Loads rules from ~/.clyro/sdk/policies.yaml (same file used in
-        local mode by SDKLocalPolicyEvaluator) and evaluates them using
+        local mode by SDKLocalPolicyEvaluator) and evaluates them with
         the shared 8-operator evaluator.
 
-        Semantics: when a rule's condition matches, the rule's ``action``
-        (block | allow | require_approval) is the final decision and we
-        short-circuit. When no rule matches, ``config.default_action``
-        applies (defaults to "allow").
+        ``PolicyEvaluator`` runs only in cloud mode (this class is
+        instantiated when ``api_key`` is set; local mode uses
+        ``SDKLocalPolicyEvaluator``). In cloud mode, the **backend's
+        policies are the source of truth** for ``default_action``. So the
+        local YAML's ``default_action`` is intentionally **not enforced**
+        here — only **explicit local rules whose conditions match** can
+        short-circuit the call:
+        - matched rule with ``action: block`` → raise ``PolicyViolationError``
+          immediately (fast-fail before the network call)
+        - matched rule with ``action: allow`` → short-circuit allow
+        - matched rule with ``action: require_approval`` → call approval
+          handler; deny → block; approve → continue
+        - no rule matched → return; defer the decision to the backend's
+          own ``default_action``
 
         Fail-open: if the YAML cannot be loaded or a single rule throws,
         evaluation continues silently.
@@ -397,25 +407,19 @@ class PolicyEvaluator:
             config = _lp.load_sdk_policies()
         except Exception:
             return
+
         all_rules: list[Any] = []
         if config.actions and action_type in config.actions:
             all_rules.extend(config.actions[action_type].policies)
         if config.global_ is not None:
             all_rules.extend(config.global_.policies)
 
-        default_action = config.default_action
-
+        # Cloud-wins precedence: the local YAML's ``default_action`` is
+        # NOT enforced at pre-flight in cloud mode. Defer to the backend.
+        # If there are no local rules, simply skip pre-flight.
         if not all_rules:
-            if default_action == "block":
-                raise PolicyViolationError(
-                    rule_id="local",
-                    rule_name="default_action",
-                    message=f"Policy default_action=block: blocked {action_type}",
-                    action_type=action_type,
-                )
             return
 
-        matched = False
         for rule in all_rules:
             try:
                 found, actual = _resolve_local_parameter(parameters, rule.parameter)
@@ -426,7 +430,6 @@ class PolicyEvaluator:
                     continue
 
                 # Condition matched — apply rule's action
-                matched = True
                 action = getattr(rule, "action", "block")
 
                 if action == "allow":
@@ -466,14 +469,9 @@ class PolicyEvaluator:
                 )
                 continue
 
-        # No rule matched → apply default_action
-        if not matched and default_action == "block":
-            raise PolicyViolationError(
-                rule_id="local",
-                rule_name="default_action",
-                message=f"Policy default_action=block: blocked {action_type}",
-                action_type=action_type,
-            )
+        # No local rule fired → defer to the backend's default_action.
+        # (Local YAML default_action is intentionally NOT enforced in cloud mode.)
+        return
 
     @property
     def is_enabled(self) -> bool:
@@ -998,19 +996,33 @@ class LocalPolicyEvaluator:
                 pass  # Graceful degradation
 
         if final_decision is None:
-            final_decision = default_action
-            # Synthesize details for the default_action=block fall-through so
-            # downstream error messages are informative rather than empty.
-            if final_decision == "block":
-                block_details = {
-                    "rule_name": "default_action",
-                    "tool_name": tool_name,
-                    "parameter": None,
-                    "operator": "default_action",
-                    "expected": None,
-                    "actual": None,
-                    "policy_id": None,
-                }
+            # If every rule was skipped because its parameter wasn't present
+            # in the tool's arguments, the policy is inapplicable to this
+            # call — bypass ``default_action`` and allow through. This
+            # prevents ``default_action: block`` paired with a field-scoped
+            # ``action: allow`` rule (the allowlist shape) from blocking
+            # tools that don't carry the rule's parameter. The zero-rules
+            # case (where ``rule_results`` is empty) still fires
+            # ``default_action``, preserving "block everything by default".
+            all_skipped = bool(rule_results) and all(
+                r["outcome"] == "skipped" for r in rule_results
+            )
+            if all_skipped:
+                final_decision = "allow"
+            else:
+                final_decision = default_action
+                # Synthesize details for the default_action=block fall-through so
+                # downstream error messages are informative rather than empty.
+                if final_decision == "block":
+                    block_details = {
+                        "rule_name": "default_action",
+                        "tool_name": tool_name,
+                        "parameter": None,
+                        "operator": "default_action",
+                        "expected": None,
+                        "actual": None,
+                        "policy_id": None,
+                    }
 
         blocked = final_decision == "block"
         return blocked, block_details, rule_results

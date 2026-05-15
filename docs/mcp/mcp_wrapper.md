@@ -400,10 +400,12 @@ The `parameter` field supports dot-notation for nested keys (`user.id`) and wild
 
 When the wrapper is cloud-connected (`backend.api_key` set), each fetched cloud
 policy's own `default_action` is merged into the wrapper using
-**most-restrictive-wins** — if either the wrapper or any cloud policy declares
-`block`, the resolved default is `block`. This survives the per-session cache
-TTL so a centrally-mandated denylist can't be silently weakened by a local
-override.
+**cloud-wins** precedence — when any cloud policy declared a `default_action`,
+it overrides the wrapper's local default. Among multiple cloud defaults, the
+most-restrictive (`block` over `allow`) wins. The local default applies only
+when no cloud policies were fetched. This survives the per-session cache TTL
+so a cache hit on the next event still honors the cloud's centrally-mandated
+default.
 
 ---
 

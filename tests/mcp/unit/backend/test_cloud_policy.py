@@ -242,11 +242,13 @@ class TestCloudPolicyApprovalConversion:
 class TestCloudPolicyDefaultActionMerge:
     """Merge cloud-policy default_action into wrapper's resolved default_action.
 
-    Cross-mode parity fix: each cloud policy carries its own default_action.
-    The wrapper's resolved default_action must be the most-restrictive across
-    its local default and every fetched cloud policy's default. Without this,
-    a centrally-mandated `default_action: block` is silently lost when the
-    wrapper falls back through (no rule matched).
+    Cross-mode parity: each cloud policy carries its own default_action.
+    Precedence is **cloud-wins** — when any cloud policy declares a
+    ``default_action``, it overrides the wrapper's local default. If
+    multiple cloud policies disagree, the most-restrictive among cloud
+    (block over allow) wins. The local default applies only when no
+    cloud policies were fetched (no policies attached to the agent, or
+    fetch failed — fail-open behavior preserved).
     """
 
     @pytest.mark.asyncio
@@ -274,10 +276,12 @@ class TestCloudPolicyDefaultActionMerge:
         assert resolved == "block"
 
     @pytest.mark.asyncio
-    async def test_local_block_wins_when_cloud_allow(
+    async def test_cloud_allow_overrides_local_block(
         self, fetcher: CloudPolicyFetcher, http_client
     ) -> None:
-        """Local default_action=block wins even if every cloud policy is allow."""
+        """Cloud-wins: when cloud declares default_action=allow it overrides
+        the local wrapper's default_action=block. The cloud is the source of
+        truth whenever cloud policies were fetched."""
         http_client.fetch_policies = AsyncMock(return_value={
             "policies": [{
                 "name": "p1",
@@ -295,7 +299,8 @@ class TestCloudPolicyDefaultActionMerge:
         _rules, resolved = await fetcher.fetch_and_merge(
             "agent-1", [], timeout=2.0, local_default_action="block",
         )
-        assert resolved == "block"
+        # Cloud says allow → wins over local block.
+        assert resolved == "allow"
 
     @pytest.mark.asyncio
     async def test_both_allow_resolves_allow(

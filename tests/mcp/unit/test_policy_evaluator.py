@@ -458,3 +458,152 @@ class TestFirstMatchWinsInMCP:
         # Per-tool runs first; allow short-circuits → not blocked
         blocked, _, _ = pe.evaluate("mytool", {"cluster": "c1"})
         assert not blocked
+
+
+class TestFixBAllowlistShape:
+    """Fix B: ``default_action`` bypassed when every rule was skipped because
+    its parameter wasn't present in the tool's arguments. Lets the allowlist
+    shape (``default_action: block`` + ``action: allow`` on a field-scoped
+    rule) work on tools that don't carry the rule's parameter."""
+
+    def test_field_absent_bypasses_default_action_block(self) -> None:
+        """User's reported case: rmq_cluster rule, default_action: block.
+        A tool call without rmq_cluster should NOT be blocked."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "rmq_cluster",
+                            "operator": "in_list",
+                            "value": ["cluster1", "cluster3"],
+                            "name": "allowed_clusters",
+                            "action": "allow",
+                        }
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        # Tool call without rmq_cluster — rule skipped, default_action bypassed
+        blocked, _, _ = pe.evaluate("some_other_tool", {"foo": "bar"})
+        assert not blocked
+
+    def test_field_present_and_matches_allows(self) -> None:
+        """Allowlist hit: rule matches → action: allow short-circuits."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "rmq_cluster",
+                            "operator": "in_list",
+                            "value": ["cluster1", "cluster3"],
+                            "name": "allowed_clusters",
+                            "action": "allow",
+                        }
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("rmq_tool", {"rmq_cluster": "cluster1"})
+        assert not blocked
+
+    def test_field_present_but_no_match_fires_default_action(self) -> None:
+        """Allowlist miss: field present, doesn't match → default_action fires."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "rmq_cluster",
+                            "operator": "in_list",
+                            "value": ["cluster1", "cluster3"],
+                            "name": "allowed_clusters",
+                            "action": "allow",
+                        }
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, details, _ = pe.evaluate("rmq_tool", {"rmq_cluster": "cluster2"})
+        assert blocked
+        assert details["rule_name"] == "default_action"
+
+    def test_zero_rules_with_default_block_still_blocks(self) -> None:
+        """Preserved: zero rules + default_action: block → BLOCK. The
+        all-skipped bypass requires rules to exist."""
+        cfg = WrapperConfig.model_validate(
+            {"default_action": "block", "global": {"policies": []}}
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("any_tool", {"any": "args"})
+        assert blocked
+
+    def test_mixed_skipped_and_no_match_fires_default_action(self) -> None:
+        """If at least one rule was actually evaluated (no_match), the policy
+        is applicable and default_action fires normally."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "rmq_cluster",
+                            "operator": "in_list",
+                            "value": ["cluster1"],
+                            "name": "rmq_allowlist",
+                            "action": "allow",
+                        },
+                        {
+                            "parameter": "endpoint",
+                            "operator": "in_list",
+                            "value": ["safe.example.com"],
+                            "name": "endpoint_allowlist",
+                            "action": "allow",
+                        },
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        # endpoint IS present (rule 2 evaluated as no_match — value not in
+        # list); rmq_cluster is absent (rule 1 skipped). Not all skipped →
+        # default_action: block fires.
+        blocked, details, _ = pe.evaluate(
+            "other_tool", {"endpoint": "evil.example.com"}
+        )
+        assert blocked
+        assert details["rule_name"] == "default_action"
+
+    def test_denylist_shape_unaffected(self) -> None:
+        """The denylist shape never relied on default_action firing on skipped
+        rules, so Fix B doesn't change its behavior."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "allow",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "rmq_cluster",
+                            "operator": "not_in_list",
+                            "value": ["cluster1", "cluster3"],
+                            "name": "rmq_denylist",
+                            "action": "block",
+                        }
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        # Tool without rmq_cluster → rule skipped → default_action: allow
+        blocked, _, _ = pe.evaluate("other_tool", {"foo": "bar"})
+        assert not blocked
+        # Tool with disallowed cluster → matches → blocks
+        blocked, _, _ = pe.evaluate("rmq_tool", {"rmq_cluster": "cluster2"})
+        assert blocked

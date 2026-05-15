@@ -128,10 +128,10 @@ class TestCacheDefaultActionPersistence:
 
     Hooks server loads a fresh HookConfig on every Claude Code event. On the
     first event we fetch from the cloud and resolve `default_action` via
-    most-restrictive-wins; subsequent events within the cache TTL must restore
+    cloud-wins precedence; subsequent events within the cache TTL must restore
     that same resolved value — otherwise the cloud's centrally-mandated
-    `default_action: block` would silently revert to the local YAML's default
-    on every cache hit.
+    `default_action` would silently revert to the local YAML's default on
+    every cache hit.
     """
 
     def test_cache_hit_restores_resolved_default_action(self):

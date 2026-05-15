@@ -143,6 +143,19 @@ config = ClyroConfig(
 )
 ```
 
+> **Cloud mode: the dashboard's `default_action` always wins.** When you set
+> an `api_key` (cloud mode), the cloud dashboard's `default_action` is
+> authoritative — your local YAML's `default_action` is treated as a
+> fallback that applies only when the agent has no cloud policies attached
+> (or the policy fetch fails). This is **cloud-wins** precedence: a
+> centrally-mandated default cannot be silently overridden by an
+> out-of-date local config.
+>
+> This applies to the `default_action` fallback only. Explicit local rules
+> (rules whose conditions match) still fast-fail pre-flight as before.
+> To honor the local YAML's `default_action`, run without `api_key`
+> (local-only mode).
+
 ## Configuration
 
 ### Environment Variables

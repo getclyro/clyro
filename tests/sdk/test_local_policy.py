@@ -614,6 +614,183 @@ class TestSDKLocalPolicyEvaluator:
         assert sync_decision.decision == async_decision.decision
 
 
+class TestFixBAllowlistShape:
+    """Fix B: ``default_action`` is bypassed when every rule was skipped
+    because its parameter wasn't present in the action's parameters.
+
+    Prevents the allowlist shape (``default_action: block`` paired with a
+    field-scoped ``action: allow`` rule) from blocking action types like
+    ``agent_execution`` and ``llm_call`` where the rule's tool-specific
+    field could never have been present.
+
+    The zero-rules case still fires ``default_action`` so the
+    "block everything by default" idiom is preserved.
+    """
+
+    def test_field_absent_bypasses_default_action_block(self, policy_dir: Path):
+        """The allowlist case the user reported: rule's field is absent on
+        this action_type → policy is inapplicable → default_action: block
+        does NOT fire."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: in_list
+                  value: [cluster1, cluster3]
+                  name: allowed_clusters
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        # llm_call has no rmq_cluster — rule is skipped, default_action bypassed
+        decision = evaluator.evaluate_sync("llm_call", {"model": "gpt-4", "cost": 0.01})
+        assert decision.decision == "allow"
+
+    def test_field_absent_bypasses_default_action_agent_execution(
+        self, policy_dir: Path
+    ):
+        """agent_execution typically carries {agent_name, model, ...} but
+        never tool args. The rule's field is absent → bypass default_action."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: in_list
+                  value: [cluster1, cluster3]
+                  name: allowed_clusters
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync(
+            "agent_execution", {"agent_name": "my-agent"}
+        )
+        assert decision.decision == "allow"
+
+    def test_field_present_and_matches_allowlist_rule(self, policy_dir: Path):
+        """Allowlist match → action: allow → ALLOW (rule fires explicitly)."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: in_list
+                  value: [cluster1, cluster3]
+                  name: allowed_clusters
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync(
+            "tool_call", {"rmq_cluster": "cluster1"}
+        )
+        assert decision.decision == "allow"
+
+    def test_field_present_but_no_match_fires_default_action_block(
+        self, policy_dir: Path
+    ):
+        """Allowlist miss → rule no_match (not skipped) → default_action fires."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: in_list
+                  value: [cluster1, cluster3]
+                  name: allowed_clusters
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        with pytest.raises(PolicyViolationError):
+            evaluator.evaluate_sync("tool_call", {"rmq_cluster": "cluster2"})
+
+    def test_zero_rules_with_default_block_unchanged_by_fix_b(
+        self, policy_dir: Path
+    ):
+        """Zero-rules path is reached via a separate early-return branch that
+        Fix B does not touch; behavior is unchanged from pre-Fix-B. (In the
+        SDK evaluator this path returns ``violated=True`` but no
+        ``violation_details``, so ``evaluate_sync`` does not raise — a
+        pre-existing quirk distinct from Fix B.)"""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies: []
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        # Pre-existing behavior: no raise. Fix B's "all skipped" branch is
+        # for the rules-exist-but-all-skipped case, not zero-rules.
+        decision = evaluator.evaluate_sync("llm_call", {"cost": 5.0})
+        assert decision.decision == "allow"
+
+    def test_mixed_skipped_and_no_match_fires_default_action(
+        self, policy_dir: Path
+    ):
+        """If at least one rule was actually evaluated (no_match), the policy
+        is applicable to this action and default_action fires normally."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: in_list
+                  value: [cluster1]
+                  name: rmq_allowlist
+                  action: allow
+                - parameter: cost
+                  operator: max_value
+                  value: 10.0
+                  name: cost_cap
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        # cost rule WAS evaluated (no_match: 0.01 not > 10.0); rmq rule skipped.
+        # Not "all skipped" → default_action: block fires.
+        with pytest.raises(PolicyViolationError):
+            evaluator.evaluate_sync("llm_call", {"cost": 0.01})
+
+    def test_denylist_shape_unaffected(self, policy_dir: Path):
+        """The denylist shape (default_action: allow + action: block) is
+        unchanged by Fix B — it never relied on default_action firing on
+        skipped rules in the first place."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: allow
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: not_in_list
+                  value: [cluster1, cluster3]
+                  name: rmq_denylist
+                  action: block
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        # llm_call: rmq_cluster absent → rule skipped → default_action: allow
+        decision = evaluator.evaluate_sync("llm_call", {"cost": 0.01})
+        assert decision.decision == "allow"
+        # tool_call with disallowed cluster → rule matches → block
+        reset_sdk_policy_cache()
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: allow
+            global:
+              policies:
+                - parameter: rmq_cluster
+                  operator: not_in_list
+                  value: [cluster1, cluster3]
+                  name: rmq_denylist
+                  action: block
+        """)
+        evaluator2 = SDKLocalPolicyEvaluator(approval_handler=None)
+        with pytest.raises(PolicyViolationError):
+            evaluator2.evaluate_sync("tool_call", {"rmq_cluster": "cluster2"})
+
+
 # ===========================================================================
 # NFR-001: Latency benchmark
 # ===========================================================================
