@@ -2,6 +2,20 @@
 # Copy to ~/.clyro/hooks/claude-code-policy.yaml and customize.
 #
 # Docs: https://docs.clyro.dev/hooks  (canonical URL in clyro/constants.py)
+#
+# Schema notes (required fields):
+#   - Top-level `default_action` (allow | block) — fallback when no rule matches.
+#   - Per-rule `action` (allow | block | require_approval) — decision applied
+#     when that rule's condition matches.
+#
+# Rule shape mental model:
+#   - Denylist (recommended for field-scoped rules):
+#       default_action: allow + rules with action: block
+#   - Allowlist (only when the rule's parameter is universal across action types):
+#       default_action: block + rules with action: allow
+
+# default_action is a TOP-LEVEL field (not nested under global: or tools:).
+default_action: allow
 
 # ── Global limits ───────────────────────────────────────────────────────────
 global:
@@ -13,31 +27,39 @@ global:
     threshold: 3             # Block if same tool+args repeated this many times
     window: 10               # Within the most recent N tool calls
 
-  # Global policies — evaluated for ALL tools
+  # Global policies — evaluated for ALL tools.
+  # Each rule MUST have an explicit `action` (allow | block | require_approval).
   policies:
     - name: "Block recursive force delete"
       parameter: command
-      operator: not_contains
+      operator: contains       # matches when command contains "rm -rf" (case-insensitive)
       value: "rm -rf"
+      action: block
 
     - name: "Block /etc writes"
       parameter: command
-      operator: not_contains
+      operator: contains
       value: "/etc/"
+      action: block
 
 # ── Per-tool policies ───────────────────────────────────────────────────────
+# Tool-scoped policies fire only when the matching tool is called. No
+# per-tool default_action — the top-level default_action governs the
+# no-match fallback for every tool.
 tools:
   Bash:
     policies:
       - name: "Block sudo commands"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "sudo"
+        action: block
 
       - name: "Block curl to external"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "curl"
+        action: block
 
 # ── Cloud backend (optional) ───────────────────────────────────────────────
 # Set CLYRO_API_KEY env var or configure here.

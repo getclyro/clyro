@@ -61,12 +61,12 @@ class TestLocalPolicyEvaluatorParity:
         """Create a minimal config-like object for LocalPolicyEvaluator."""
         from clyro.config import GlobalConfig, PolicyRule, WrapperConfig
         global_config = GlobalConfig(policies=[PolicyRule(**r) for r in rules])
-        return WrapperConfig(global_=global_config)
+        return WrapperConfig(global_=global_config, default_action="allow")
 
     def test_max_value_violation(self):
         from clyro.policy import LocalPolicyEvaluator
         config = self._make_config([
-            {"parameter": "amount", "operator": "max_value", "value": 100}
+            {"action": "block", "parameter": "amount", "operator": "max_value", "value": 100}
         ])
         evaluator = LocalPolicyEvaluator(config)
         violated, details, _ = evaluator.evaluate("test_tool", {"amount": 150})
@@ -75,7 +75,7 @@ class TestLocalPolicyEvaluatorParity:
     def test_max_value_pass(self):
         from clyro.policy import LocalPolicyEvaluator
         config = self._make_config([
-            {"parameter": "amount", "operator": "max_value", "value": 100}
+            {"action": "block", "parameter": "amount", "operator": "max_value", "value": 100}
         ])
         evaluator = LocalPolicyEvaluator(config)
         violated, details, _ = evaluator.evaluate("test_tool", {"amount": 50})
@@ -84,7 +84,7 @@ class TestLocalPolicyEvaluatorParity:
     def test_contains_violation(self):
         from clyro.policy import LocalPolicyEvaluator
         config = self._make_config([
-            {"parameter": "command", "operator": "contains", "value": "rm -rf"}
+            {"action": "block", "parameter": "command", "operator": "contains", "value": "rm -rf"}
         ])
         evaluator = LocalPolicyEvaluator(config)
         violated, _, _ = evaluator.evaluate("bash", {"command": "rm -rf /"})
@@ -93,7 +93,7 @@ class TestLocalPolicyEvaluatorParity:
     def test_not_contains_pass(self):
         from clyro.policy import LocalPolicyEvaluator
         config = self._make_config([
-            {"parameter": "command", "operator": "not_contains", "value": "rm -rf"}
+            {"action": "block", "parameter": "command", "operator": "not_contains", "value": "rm -rf"}
         ])
         evaluator = LocalPolicyEvaluator(config)
         # not_contains triggers when the value is absent from the parameter,

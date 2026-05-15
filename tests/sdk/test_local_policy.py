@@ -51,8 +51,42 @@ def policy_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _write_policy(policy_dir: Path, content: str) -> Path:
+    """Write a policy YAML, auto-injecting defaults for required fields.
+
+    Tests can pre-set `default_action` or per-rule `action` to override; the
+    injection only fills in fields that are missing. Malformed YAML strings
+    are passed through unchanged so error-path tests still exercise validation.
+    """
     p = policy_dir / "policies.yaml"
-    p.write_text(textwrap.dedent(content), encoding="utf-8")
+    text = textwrap.dedent(content)
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        data = None
+
+    if isinstance(data, dict):
+        if "default_action" not in data:
+            data["default_action"] = "allow"
+
+        def _inject_rule_action(rule: object) -> None:
+            if isinstance(rule, dict) and "action" not in rule:
+                rule["action"] = "block"
+
+        global_section = data.get("global")
+        if isinstance(global_section, dict):
+            for rule in global_section.get("policies", []) or []:
+                _inject_rule_action(rule)
+
+        actions_section = data.get("actions")
+        if isinstance(actions_section, dict):
+            for action_block in actions_section.values():
+                if isinstance(action_block, dict):
+                    for rule in action_block.get("policies", []) or []:
+                        _inject_rule_action(rule)
+
+        text = yaml.dump(data, sort_keys=False)
+
+    p.write_text(text, encoding="utf-8")
     return p
 
 
@@ -77,11 +111,12 @@ class TestSDKPolicyRule:
         )
         assert rule.action == "require_approval"
 
-    def test_default_action_is_block(self):
-        rule = SDKPolicyRule(
-            parameter="cost", operator="max_value", value=100,
-        )
-        assert rule.action == "block"
+    def test_action_required(self):
+        """action is required — omitting it raises."""
+        with pytest.raises(ValidationError):
+            SDKPolicyRule(
+                parameter="cost", operator="max_value", value=100,
+            )
 
     def test_invalid_action_raises(self):
         with pytest.raises(ValidationError):
@@ -93,13 +128,13 @@ class TestSDKPolicyRule:
     def test_inherits_operator_validation(self):
         with pytest.raises(ValidationError):
             SDKPolicyRule(
-                parameter="cost", operator="invalid_op", value=100,
+                parameter="cost", operator="invalid_op", value=100, action="block",
             )
 
     def test_extra_fields_ignored(self):
         """SDKPolicyRule has extra='ignore' — future MCP fields accepted."""
         rule = SDKPolicyRule(
-            parameter="cost", operator="max_value", value=100,
+            parameter="cost", operator="max_value", value=100, action="block",
             future_mcp_field="whatever",  # type: ignore[call-arg]
         )
         assert rule.parameter == "cost"
@@ -111,7 +146,7 @@ class TestSDKPolicyRule:
             "in_list", "not_in_list", "contains", "not_contains",
         ]
         for op in ops:
-            rule = SDKPolicyRule(parameter="x", operator=op, value=1)
+            rule = SDKPolicyRule(parameter="x", operator=op, value=1, action="block")
             assert rule.operator == op
 
 
@@ -124,16 +159,21 @@ class TestSDKPolicyConfig:
     """FRD-SOF-001, FRD-SOF-003: YAML schema validation."""
 
     def test_valid_config(self):
-        config = SDKPolicyConfig(version=1)
+        config = SDKPolicyConfig(version=1, default_action="allow")
         assert config.version == 1
 
     def test_wrong_version_raises(self):
         with pytest.raises(ValidationError):
-            SDKPolicyConfig(version=2)
+            SDKPolicyConfig(version=2, default_action="allow")
+
+    def test_default_action_required(self):
+        """default_action is required — omitting it raises."""
+        with pytest.raises(ValidationError):
+            SDKPolicyConfig(version=1)
 
     def test_global_alias(self):
         """'global' YAML key maps to global_ Python field."""
-        data = {"version": 1, "global": {"policies": []}}
+        data = {"version": 1, "default_action": "allow", "global": {"policies": []}}
         config = SDKPolicyConfig.model_validate(data)
         assert config.global_ is not None
         assert config.global_.policies == []
@@ -141,11 +181,12 @@ class TestSDKPolicyConfig:
     def test_actions_with_known_types(self):
         data = {
             "version": 1,
+            "default_action": "allow",
             "actions": {
                 "llm_call": {
                     "policies": [
                         {"parameter": "model", "operator": "in_list",
-                         "value": ["gpt-4"], "name": "test"},
+                         "value": ["gpt-4"], "name": "test", "action": "block"},
                     ],
                 },
             },
@@ -158,10 +199,11 @@ class TestSDKPolicyConfig:
         """FRD-SOF-003: unknown action types silently ignored."""
         data = {
             "version": 1,
+            "default_action": "allow",
             "actions": {
                 "custom_action": {
                     "policies": [
-                        {"parameter": "x", "operator": "equals", "value": 1},
+                        {"parameter": "x", "operator": "equals", "value": 1, "action": "block"},
                     ],
                 },
             },
@@ -482,23 +524,27 @@ class TestSDKLocalPolicyEvaluator:
             assert decision.decision == "allow"
 
     def test_all_8_operators(self, policy_dir: Path):
-        """TDD §13.1 C2: all 8 operators work correctly."""
+        """TDD §13.1 C2: all 8 operators work correctly.
+
+        Each operator's condition "matches" when the predicate below holds.
+        With the rule's default action of "block", a match → BLOCK.
+        """
         test_cases = [
-            ("max_value", 10, {"x": 20}, True),   # 20 > 10 → violated
-            ("max_value", 10, {"x": 5}, False),    # 5 <= 10 → ok
-            ("min_value", 10, {"x": 5}, True),     # 5 < 10 → violated
+            ("max_value", 10, {"x": 20}, True),    # 20 > 10 → match → BLOCK
+            ("max_value", 10, {"x": 5}, False),    # 5 not > 10 → no match
+            ("min_value", 10, {"x": 5}, True),     # 5 < 10 → match → BLOCK
             ("min_value", 10, {"x": 20}, False),
-            ("equals", "foo", {"x": "bar"}, True), # bar != foo → violated
-            ("equals", "foo", {"x": "foo"}, False),
-            ("not_equals", "foo", {"x": "foo"}, True),  # foo == foo → violated
-            ("not_equals", "foo", {"x": "bar"}, False),
-            ("in_list", ["a", "b"], {"x": "c"}, True),  # c not in [a,b] → violated
-            ("in_list", ["a", "b"], {"x": "a"}, False),
-            ("not_in_list", ["a", "b"], {"x": "a"}, True),  # a in [a,b] → violated
-            ("not_in_list", ["a", "b"], {"x": "c"}, False),
-            ("contains", "bad", {"x": "bad_word"}, True),    # "bad" in "bad_word" → violated
+            ("equals", "foo", {"x": "foo"}, True),   # foo == foo → match → BLOCK
+            ("equals", "foo", {"x": "bar"}, False),
+            ("not_equals", "foo", {"x": "bar"}, True),  # bar != foo → match → BLOCK
+            ("not_equals", "foo", {"x": "foo"}, False),
+            ("in_list", ["a", "b"], {"x": "a"}, True),   # a in [a,b] → match → BLOCK
+            ("in_list", ["a", "b"], {"x": "c"}, False),
+            ("not_in_list", ["a", "b"], {"x": "c"}, True),  # c not in [a,b] → match → BLOCK
+            ("not_in_list", ["a", "b"], {"x": "a"}, False),
+            ("contains", "bad", {"x": "bad_word"}, True),    # "bad" in "bad_word" → match → BLOCK
             ("contains", "bad", {"x": "good_word"}, False),
-            ("not_contains", "good", {"x": "bad_word"}, True),  # "good" not in "bad_word" → violated
+            ("not_contains", "good", {"x": "bad_word"}, True),  # "good" not in "bad_word" → match → BLOCK
             ("not_contains", "good", {"x": "good_word"}, False),
         ]
 
@@ -510,9 +556,11 @@ class TestSDKLocalPolicyEvaluator:
                 "operator": op,
                 "value": value,
                 "name": "test_rule",
+                "action": "block",
             }
             yaml_data = {
                 "version": 1,
+                "default_action": "allow",
                 "global": {"policies": [rule]},
             }
             yaml_content = yaml.dump(yaml_data, default_flow_style=False)
@@ -627,15 +675,10 @@ class TestPerActionAndGlobalOrdering:
         """)
         evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
 
-        # "forbidden" triggers per-action rule (not_equals: "forbidden" != model -> violated? No.
-        # equals: model != "forbidden" -> violated. So model="forbidden" -> not violated.
-        # Actually equals returns True (violated) when actual != expected.
-        # So model="forbidden" with equals/"forbidden" -> actual == expected -> NOT violated.
-        # model="other" with equals/"forbidden" -> actual != expected -> violated.
-
-        # Use a model that violates the per-action rule
+        # `equals "forbidden"` matches when model == "forbidden". Action defaults
+        # to "block", so model="forbidden" → per-action rule matches → BLOCK.
         with pytest.raises(PolicyViolationError, match="per_action_block"):
-            evaluator.evaluate_sync("llm_call", {"model": "other"})
+            evaluator.evaluate_sync("llm_call", {"model": "forbidden"})
 
         # Verify per-action rule was the one that triggered (not global)
         events = evaluator.drain_events()
@@ -724,3 +767,192 @@ class TestYAMLLoadBenchmark:
 
         # Target: <10ms. CI threshold: <50ms (Pydantic validation + YAML parsing overhead)
         assert elapsed_ms < 50.0, f"Cold load took {elapsed_ms:.2f}ms (CI budget: 50ms)"
+
+
+# ===========================================================================
+# New-semantic behavior tests: action=allow, default_action, first-match-wins
+# ===========================================================================
+
+
+class TestActionAllowSemantic:
+    """Rules with action: allow short-circuit to allow on match."""
+
+    def test_action_allow_matched_returns_allow(self, policy_dir: Path):
+        """A matched rule with action: allow → call is allowed."""
+        _write_policy(policy_dir, """\
+            version: 1
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1", "c3"]
+                  action: allow
+                  name: allow_clusters
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync("tool_call", {"cluster": "c1"})
+        assert decision.decision == "allow"
+
+    def test_action_allow_short_circuits_later_block(self, policy_dir: Path):
+        """First-match-wins: matched action: allow prevents a later block rule from firing."""
+        _write_policy(policy_dir, """\
+            version: 1
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: allow
+                  name: allow_c1
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: block
+                  name: block_c1
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync("tool_call", {"cluster": "c1"})
+        assert decision.decision == "allow"
+
+
+class TestDefaultActionSemantic:
+    """default_action determines outcome when no rule matches."""
+
+    def test_default_action_allow_when_no_match(self, policy_dir: Path):
+        """default_action defaults to allow; no rule matches → allow."""
+        _write_policy(policy_dir, """\
+            version: 1
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: block
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync("tool_call", {"cluster": "c2"})
+        assert decision.decision == "allow"
+
+    def test_default_action_block_when_no_match_blocks(self, policy_dir: Path):
+        """default_action=block + no rule match → BLOCK."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        with pytest.raises(PolicyViolationError):
+            evaluator.evaluate_sync("tool_call", {"cluster": "c2"})
+
+    def test_default_action_block_skipped_when_rule_matches(self, policy_dir: Path):
+        """default_action=block is irrelevant once a rule matches."""
+        _write_policy(policy_dir, """\
+            version: 1
+            default_action: block
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: allow
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        decision = evaluator.evaluate_sync("tool_call", {"cluster": "c1"})
+        assert decision.decision == "allow"
+
+
+class TestFirstMatchWins:
+    """First matching rule's action wins; later rules don't override."""
+
+    def test_first_block_wins_over_later_allow(self, policy_dir: Path):
+        """If block rule matches first, allow rule does not override."""
+        _write_policy(policy_dir, """\
+            version: 1
+            global:
+              policies:
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: block
+                  name: block_first
+                - parameter: cluster
+                  operator: in_list
+                  value: ["c1"]
+                  action: allow
+                  name: allow_second
+        """)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+        with pytest.raises(PolicyViolationError, match="block_first"):
+            evaluator.evaluate_sync("tool_call", {"cluster": "c1"})
+
+
+class TestUserSpecFourCases:
+    """End-to-end coverage of the four cases the user specified."""
+
+    @pytest.mark.parametrize(
+        "operator,action,default,cluster,expected",
+        [
+            # Case 1: in_list + block, default allow
+            ("in_list", "block", "allow", "c1", "block"),
+            ("in_list", "block", "allow", "c2", "allow"),
+            # Case 2: in_list + allow, default block
+            ("in_list", "allow", "block", "c1", "allow"),
+            ("in_list", "allow", "block", "c2", "block"),
+            # Case 3: not_in_list + block, default allow
+            ("not_in_list", "block", "allow", "c1", "allow"),
+            ("not_in_list", "block", "allow", "c2", "block"),
+            # Case 4: not_in_list + allow, default block
+            ("not_in_list", "allow", "block", "c1", "block"),
+            ("not_in_list", "allow", "block", "c2", "allow"),
+        ],
+    )
+    def test_user_spec_case(
+        self,
+        policy_dir: Path,
+        operator: str,
+        action: str,
+        default: str,
+        cluster: str,
+        expected: str,
+    ):
+        """Confirm rmq_cluster scenarios behave per the user's spec."""
+        yaml_content = (
+            "version: 1\n"
+            f"default_action: {default}\n"
+            "global:\n"
+            "  policies:\n"
+            "    - parameter: rmq_cluster\n"
+            f"      operator: {operator}\n"
+            "      value: [c1, c3]\n"
+            f"      action: {action}\n"
+            "      name: rmq_rule\n"
+        )
+        _write_policy(policy_dir, yaml_content)
+        evaluator = SDKLocalPolicyEvaluator(approval_handler=None)
+
+        if expected == "block":
+            with pytest.raises(PolicyViolationError):
+                evaluator.evaluate_sync("tool_call", {"rmq_cluster": cluster})
+        else:
+            decision = evaluator.evaluate_sync("tool_call", {"rmq_cluster": cluster})
+            assert decision.decision == "allow"
+
+
+class TestDefaultActionRequired:
+    """Regression: default_action is required on SDKPolicyConfig.
+
+    Locks the contract — if anyone re-introduces a default value for
+    default_action, this test will fail and force a deliberate change.
+    """
+
+    def test_missing_default_action_raises(self) -> None:
+        with pytest.raises(ValidationError, match="default_action"):
+            SDKPolicyConfig.model_validate({
+                "version": 1,
+                "global": {"policies": []},
+            })

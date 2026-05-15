@@ -19,14 +19,14 @@ TEST_SESSION_ID = UUID("00000000-0000-0000-0000-000000000099")
 @pytest.fixture
 def default_config() -> WrapperConfig:
     """WrapperConfig with sensible defaults."""
-    return WrapperConfig()
+    return WrapperConfig(default_action="allow")
 
 
 @pytest.fixture
 def strict_config(tmp_path) -> WrapperConfig:
     """Config with low limits for testing blocking behaviour."""
     return WrapperConfig.model_validate(
-        {
+        {"default_action": "allow",
             "global": {
                 "max_steps": 2,
                 "max_cost_usd": 0.001,

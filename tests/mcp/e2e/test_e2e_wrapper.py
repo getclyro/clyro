@@ -97,7 +97,7 @@ class TestE2ELoopDetection:
         from clyro.mcp.session import McpSession
 
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {"loop_detection": {"threshold": 3, "window": 10}},
                 "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             }
@@ -120,11 +120,11 @@ class TestE2EPolicyEnforcement:
 
     def test_contains_blocks_drop(self) -> None:
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "tools": {
                     "query_database": {
                         "policies": [
-                            {"parameter": "sql", "operator": "contains", "value": "DROP"}
+                            {"parameter": "sql", "operator": "contains", "value": "DROP", "action": "block"}
                         ]
                     }
                 }
@@ -149,7 +149,7 @@ class TestE2EAuditLogWritten:
         from clyro.mcp.session import McpSession
 
         cfg = WrapperConfig.model_validate(
-            {"audit": {"log_path": str(tmp_path / "audit.jsonl")}}
+            {"default_action": "allow", "audit": {"log_path": str(tmp_path / "audit.jsonl")}}
         )
         ps = PreventionStack(cfg)
         s = McpSession()

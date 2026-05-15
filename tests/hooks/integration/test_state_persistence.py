@@ -28,7 +28,7 @@ class TestSequentialCalls:
 
         FRD success metric: 0 corruption events in 1000 calls.
         """
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {
                 "max_steps": 200,
                 "max_cost_usd": 100.0,

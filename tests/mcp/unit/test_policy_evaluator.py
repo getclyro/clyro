@@ -8,15 +8,22 @@ from clyro.config import WrapperConfig
 from clyro.policy import LocalPolicyEvaluator as PolicyEvaluator
 
 
-def _config_with_global_policies(rules: list[dict]) -> WrapperConfig:
+def _config_with_global_policies(
+    rules: list[dict], default_action: str = "allow"
+) -> WrapperConfig:
     return WrapperConfig.model_validate(
-        {"global": {"policies": rules}}
+        {"global": {"policies": rules}, "default_action": default_action}
     )
 
 
-def _config_with_tool_policies(tool_name: str, rules: list[dict]) -> WrapperConfig:
+def _config_with_tool_policies(
+    tool_name: str, rules: list[dict], default_action: str = "allow"
+) -> WrapperConfig:
     return WrapperConfig.model_validate(
-        {"tools": {tool_name: {"policies": rules}}}
+        {
+            "tools": {tool_name: {"policies": rules}},
+            "default_action": default_action,
+        }
     )
 
 
@@ -26,7 +33,7 @@ class TestPolicyMaxValue:
     def test_blocks_over_max(self) -> None:
         """TDD §11.1 #13 — amount=1200 with max_value:500 → violated."""
         cfg = _config_with_global_policies(
-            [{"parameter": "amount", "operator": "max_value", "value": 500}]
+            [{"action": "block", "parameter": "amount", "operator": "max_value", "value": 500}]
         )
         pe = PolicyEvaluator(cfg)
         violated, details, _rule_results = pe.evaluate("transfer", {"amount": 1200})
@@ -36,7 +43,7 @@ class TestPolicyMaxValue:
 
     def test_allows_under_max(self) -> None:
         cfg = _config_with_global_policies(
-            [{"parameter": "amount", "operator": "max_value", "value": 500}]
+            [{"action": "block", "parameter": "amount", "operator": "max_value", "value": 500}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("transfer", {"amount": 100})
@@ -50,7 +57,7 @@ class TestPolicyNotContains:
         """not_contains:'DROP' allows when 'DROP' IS present in value."""
         cfg = _config_with_tool_policies(
             "query_database",
-            [{"parameter": "sql", "operator": "not_contains", "value": "DROP"}],
+            [{"action": "block", "parameter": "sql", "operator": "not_contains", "value": "DROP"}],
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("query_database", {"sql": "DROP TABLE users"})
@@ -60,7 +67,7 @@ class TestPolicyNotContains:
         """not_contains:'DROP' blocks when 'DROP' is NOT present in value."""
         cfg = _config_with_tool_policies(
             "query_database",
-            [{"parameter": "sql", "operator": "not_contains", "value": "DROP"}],
+            [{"action": "block", "parameter": "sql", "operator": "not_contains", "value": "DROP"}],
         )
         pe = PolicyEvaluator(cfg)
         violated, details, _rr = pe.evaluate("query_database", {"sql": "SELECT * FROM users"})
@@ -69,36 +76,36 @@ class TestPolicyNotContains:
 
 
 class TestPolicyInList:
-    """Operator: in_list."""
+    """Operator: in_list — matches when actual IS in list (default action=block)."""
 
-    def test_allows_in_list(self) -> None:
-        """TDD §11.1 #15 — category='books' in ['books','music'] → allowed."""
+    def test_blocks_when_in_list(self) -> None:
+        """in_list ['books','music'] matches when category='books' → BLOCK."""
         cfg = _config_with_global_policies(
-            [{"parameter": "category", "operator": "in_list", "value": ["books", "music"]}]
+            [{"action": "block", "parameter": "category", "operator": "in_list", "value": ["books", "music"]}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("search", {"category": "books"})
-        assert not violated
+        assert violated
 
-    def test_blocks_not_in_list(self) -> None:
+    def test_allows_when_not_in_list(self) -> None:
+        """in_list ['books','music'] does not match when category='weapons' → ALLOW (default)."""
         cfg = _config_with_global_policies(
-            [{"parameter": "category", "operator": "in_list", "value": ["books", "music"]}]
+            [{"action": "block", "parameter": "category", "operator": "in_list", "value": ["books", "music"]}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("search", {"category": "weapons"})
-        assert violated
+        assert not violated
 
 
 class TestPolicyNotInList:
-    """Operator: not_in_list."""
+    """Operator: not_in_list — matches when actual is NOT in list (default action=block)."""
 
-    def test_blocks_in_blocked_list(self) -> None:
-        """TDD §11.1 #16 — to='ceo@...' in not_in_list → violated."""
+    def test_allows_when_in_list(self) -> None:
+        """not_in_list does not match when value IS in list → ALLOW (default)."""
         cfg = _config_with_tool_policies(
             "send_email",
             [
-                {
-                    "parameter": "to",
+                {"action": "block", "parameter": "to",
                     "operator": "not_in_list",
                     "value": ["ceo@company.com", "board@company.com"],
                 }
@@ -106,14 +113,14 @@ class TestPolicyNotInList:
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("send_email", {"to": "ceo@company.com"})
-        assert violated
+        assert not violated
 
-    def test_allows_not_in_blocked_list(self) -> None:
+    def test_blocks_when_not_in_list(self) -> None:
+        """not_in_list matches when value is NOT in list → BLOCK."""
         cfg = _config_with_tool_policies(
             "send_email",
             [
-                {
-                    "parameter": "to",
+                {"action": "block", "parameter": "to",
                     "operator": "not_in_list",
                     "value": ["ceo@company.com"],
                 }
@@ -121,7 +128,7 @@ class TestPolicyNotInList:
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("send_email", {"to": "alice@company.com"})
-        assert not violated
+        assert violated
 
 
 class TestPolicyEvalOrder:
@@ -130,16 +137,16 @@ class TestPolicyEvalOrder:
     def test_per_tool_before_global(self) -> None:
         """TDD §11.1 #17 — per-tool rules evaluated before global."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "policies": [
-                        {"parameter": "x", "operator": "max_value", "value": 999},
+                        {"action": "block", "parameter": "x", "operator": "max_value", "value": 999},
                     ]
                 },
                 "tools": {
                     "mytool": {
                         "policies": [
-                            {"parameter": "x", "operator": "max_value", "value": 5},
+                            {"action": "block", "parameter": "x", "operator": "max_value", "value": 5},
                         ]
                     }
                 },
@@ -154,7 +161,7 @@ class TestPolicyEvalOrder:
     def test_wildcard_parameter(self) -> None:
         """TDD §11.1 #18 — *.amount matches any tool's amount param."""
         cfg = _config_with_global_policies(
-            [{"parameter": "*.amount", "operator": "max_value", "value": 100}]
+            [{"action": "block", "parameter": "*.amount", "operator": "max_value", "value": 100}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("any_tool", {"amount": 500})
@@ -164,33 +171,36 @@ class TestPolicyEvalOrder:
 class TestPolicyOperators:
     """Cover remaining operators: equals, not_equals, min_value, contains."""
 
-    def test_equals_blocks_mismatch(self) -> None:
+    def test_equals_blocks_when_equal(self) -> None:
+        """equals 'safe' matches when mode=='safe' → BLOCK (default action)."""
         cfg = _config_with_global_policies(
-            [{"parameter": "mode", "operator": "equals", "value": "safe"}]
-        )
-        pe = PolicyEvaluator(cfg)
-        violated, _, _rr = pe.evaluate("t", {"mode": "unsafe"})
-        assert violated
-
-    def test_equals_allows_match(self) -> None:
-        cfg = _config_with_global_policies(
-            [{"parameter": "mode", "operator": "equals", "value": "safe"}]
+            [{"action": "block", "parameter": "mode", "operator": "equals", "value": "safe"}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"mode": "safe"})
+        assert violated
+
+    def test_equals_allows_when_unequal(self) -> None:
+        """equals 'safe' does not match when mode!='safe' → ALLOW (default)."""
+        cfg = _config_with_global_policies(
+            [{"action": "block", "parameter": "mode", "operator": "equals", "value": "safe"}]
+        )
+        pe = PolicyEvaluator(cfg)
+        violated, _, _rr = pe.evaluate("t", {"mode": "unsafe"})
         assert not violated
 
-    def test_not_equals_blocks_match(self) -> None:
+    def test_not_equals_allows_when_equal(self) -> None:
+        """not_equals 'production' does not match when env=='production' → ALLOW."""
         cfg = _config_with_global_policies(
-            [{"parameter": "env", "operator": "not_equals", "value": "production"}]
+            [{"action": "block", "parameter": "env", "operator": "not_equals", "value": "production"}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"env": "production"})
-        assert violated
+        assert not violated
 
     def test_min_value_blocks_below(self) -> None:
         cfg = _config_with_global_policies(
-            [{"parameter": "count", "operator": "min_value", "value": 10}]
+            [{"action": "block", "parameter": "count", "operator": "min_value", "value": 10}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"count": 3})
@@ -199,7 +209,7 @@ class TestPolicyOperators:
     def test_contains_blocks_when_present(self) -> None:
         """contains:'DANGER' blocks when 'DANGER' IS found in the value."""
         cfg = _config_with_global_policies(
-            [{"parameter": "text", "operator": "contains", "value": "DANGER"}]
+            [{"action": "block", "parameter": "text", "operator": "contains", "value": "DANGER"}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"text": "this is DANGER zone"})
@@ -208,7 +218,7 @@ class TestPolicyOperators:
     def test_contains_allows_when_absent(self) -> None:
         """contains:'DANGER' allows when 'DANGER' is NOT found in the value."""
         cfg = _config_with_global_policies(
-            [{"parameter": "text", "operator": "contains", "value": "DANGER"}]
+            [{"action": "block", "parameter": "text", "operator": "contains", "value": "DANGER"}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"text": "this is OK"})
@@ -217,7 +227,7 @@ class TestPolicyOperators:
     def test_missing_parameter_no_violation(self) -> None:
         """Rule does not apply if parameter is absent."""
         cfg = _config_with_global_policies(
-            [{"parameter": "nonexistent", "operator": "max_value", "value": 5}]
+            [{"action": "block", "parameter": "nonexistent", "operator": "max_value", "value": 5}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"other": 100})
@@ -226,26 +236,26 @@ class TestPolicyOperators:
     def test_none_arguments(self) -> None:
         """None arguments treated as empty dict."""
         cfg = _config_with_global_policies(
-            [{"parameter": "x", "operator": "max_value", "value": 5}]
+            [{"action": "block", "parameter": "x", "operator": "max_value", "value": 5}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", None)
         assert not violated
 
-    def test_non_numeric_violates_max_value(self) -> None:
-        """Non-numeric value with max_value -> violation (can't satisfy numeric bound)."""
+    def test_non_numeric_matches_max_value(self) -> None:
+        """Non-numeric value with max_value → match=True → action fires (fail-closed block)."""
         cfg = _config_with_global_policies(
-            [{"parameter": "amount", "operator": "max_value", "value": 500}]
+            [{"action": "block", "parameter": "amount", "operator": "max_value", "value": 500}]
         )
         pe = PolicyEvaluator(cfg)
         violated, details, _rule_results = pe.evaluate("t", {"amount": "not-a-number"})
         assert violated
         assert details["operator"] == "max_value"
 
-    def test_non_numeric_violates_min_value(self) -> None:
-        """Non-numeric value with min_value -> violation."""
+    def test_non_numeric_matches_min_value(self) -> None:
+        """Non-numeric value with min_value → match=True → action fires (fail-closed block)."""
         cfg = _config_with_global_policies(
-            [{"parameter": "count", "operator": "min_value", "value": 1}]
+            [{"action": "block", "parameter": "count", "operator": "min_value", "value": 1}]
         )
         pe = PolicyEvaluator(cfg)
         violated, _, _rr = pe.evaluate("t", {"count": "abc"})
@@ -258,11 +268,10 @@ class TestPolicyIdInViolationDetails:
     def test_violation_includes_policy_id(self) -> None:
         """Violation details should include policy_id from the rule."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "policies": [
-                        {
-                            "parameter": "amount",
+                        {"action": "block", "parameter": "amount",
                             "operator": "max_value",
                             "value": 100,
                             "name": "max_amount",
@@ -280,7 +289,7 @@ class TestPolicyIdInViolationDetails:
     def test_violation_policy_id_none_for_local(self) -> None:
         """Local YAML rules without policy_id should have None."""
         cfg = _config_with_global_policies(
-            [{"parameter": "amount", "operator": "max_value", "value": 100}]
+            [{"action": "block", "parameter": "amount", "operator": "max_value", "value": 100}]
         )
         pe = PolicyEvaluator(cfg)
         violated, details, _rule_results = pe.evaluate("transfer", {"amount": 500})
@@ -290,9 +299,162 @@ class TestPolicyIdInViolationDetails:
     def test_no_violation_no_policy_id(self) -> None:
         """Non-violated rules should return empty details (no policy_id key)."""
         cfg = _config_with_global_policies(
-            [{"parameter": "amount", "operator": "max_value", "value": 1000}]
+            [{"action": "block", "parameter": "amount", "operator": "max_value", "value": 1000}]
         )
         pe = PolicyEvaluator(cfg)
         violated, details, _rule_results = pe.evaluate("transfer", {"amount": 50})
         assert not violated
         assert "policy_id" not in details
+
+
+# ===========================================================================
+# New-semantic behavior tests
+# ===========================================================================
+
+
+class TestActionAllowInMCP:
+    """MCP/hooks respects action: allow on matched rules."""
+
+    def test_action_allow_matched_yields_no_block(self) -> None:
+        cfg = _config_with_global_policies(
+            [
+                {
+                    "parameter": "cluster",
+                    "operator": "in_list",
+                    "value": ["c1"],
+                    "action": "allow",
+                }
+            ]
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("t", {"cluster": "c1"})
+        assert not blocked
+
+    def test_action_allow_short_circuits_later_block(self) -> None:
+        cfg = _config_with_global_policies(
+            [
+                {
+                    "parameter": "cluster",
+                    "operator": "in_list",
+                    "value": ["c1"],
+                    "action": "allow",
+                },
+                {
+                    "action": "block",
+                    "parameter": "cluster",
+                    "operator": "in_list",
+                    "value": ["c1"],
+                },
+            ]
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("t", {"cluster": "c1"})
+        assert not blocked
+
+
+class TestDefaultActionInMCP:
+    """default_action covers the no-match path in MCP/hooks."""
+
+    def test_default_action_allow_no_match(self) -> None:
+        cfg = _config_with_global_policies(
+            [{"action": "block", "parameter": "cluster", "operator": "in_list", "value": ["c1"]}]
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("t", {"cluster": "c2"})
+        assert not blocked
+
+    def test_default_action_block_no_match(self) -> None:
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {"action": "block", "parameter": "cluster", "operator": "in_list", "value": ["c1"]}
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, details, _ = pe.evaluate("t", {"cluster": "c2"})
+        assert blocked
+        # Synthetic details so consumers see something actionable
+        assert details["rule_name"] == "default_action"
+        assert details["operator"] == "default_action"
+
+    def test_default_action_block_skipped_when_rule_matches(self) -> None:
+        """A matched action: allow rule short-circuits before default_action block fires."""
+        cfg = WrapperConfig.model_validate(
+            {
+                "default_action": "block",
+                "global": {
+                    "policies": [
+                        {
+                            "parameter": "cluster",
+                            "operator": "in_list",
+                            "value": ["c1"],
+                            "action": "allow",
+                        }
+                    ]
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("t", {"cluster": "c1"})
+        assert not blocked
+
+
+class TestFirstMatchWinsInMCP:
+    """First matching rule's action wins; later rules don't override."""
+
+    def test_block_then_allow_first_wins(self) -> None:
+        cfg = _config_with_global_policies(
+            [
+                {
+                    "action": "block",
+                    "parameter": "cluster",
+                    "operator": "in_list",
+                    "value": ["c1"],
+                },
+                {
+                    "parameter": "cluster",
+                    "operator": "in_list",
+                    "value": ["c1"],
+                    "action": "allow",
+                },
+            ]
+        )
+        pe = PolicyEvaluator(cfg)
+        blocked, _, _ = pe.evaluate("t", {"cluster": "c1"})
+        assert blocked
+
+    def test_per_tool_evaluated_before_global(self) -> None:
+        cfg = WrapperConfig.model_validate(
+            {"default_action": "allow",
+                "global": {
+                    "policies": [
+                        {"action": "block", "parameter": "cluster",
+                            "operator": "in_list",
+                            "value": ["c1"],
+                            "name": "global_block",
+                        }
+                    ]
+                },
+                "tools": {
+                    "mytool": {
+                        "policies": [
+                            {
+                                "parameter": "cluster",
+                                "operator": "in_list",
+                                "value": ["c1"],
+                                "action": "allow",
+                                "name": "tool_allow",
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+        pe = PolicyEvaluator(cfg)
+        # Per-tool runs first; allow short-circuits → not blocked
+        blocked, _, _ = pe.evaluate("mytool", {"cluster": "c1"})
+        assert not blocked

@@ -606,6 +606,9 @@ class PolicyRule(BaseModel):
     policy_id: str | None = Field(
         default=None, description="UUID from cloud policies, None for local YAML"
     )
+    action: str = Field(
+        description=("Required. Decision when condition matches: 'block' or 'allow'."),
+    )
 
     @field_validator("operator")
     @classmethod
@@ -622,6 +625,14 @@ class PolicyRule(BaseModel):
         }
         if v not in allowed:
             raise ValueError(f"Unknown operator '{v}'. Allowed: {sorted(allowed)}")
+        return v
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        allowed = {"block", "allow", "require_approval"}
+        if v not in allowed:
+            raise ValueError(f"Unknown action '{v}'. Allowed: {sorted(allowed)}")
         return v
 
 
@@ -673,8 +684,22 @@ class WrapperConfig(BaseModel):
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     backend: BackendConfig = Field(default_factory=BackendConfig)
+    default_action: str = Field(
+        description=(
+            "Required. Decision when no rule's condition matches: 'block' or 'allow'. "
+            "Use 'allow' for a denylist (rules block specific cases) or 'block' "
+            "for an allowlist (rules allow specific cases)."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("default_action")
+    @classmethod
+    def validate_default_action(cls, v: str) -> str:
+        if v not in {"block", "allow"}:
+            raise ValueError(f"Unknown default_action '{v}'. Allowed: ['allow', 'block']")
+        return v
 
     @property
     def is_backend_enabled(self) -> bool:
@@ -710,7 +735,7 @@ def load_mcp_config(config_path: str | None = None) -> WrapperConfig:
     resolved = Path(os.path.expanduser(config_path or MCP_DEFAULT_CONFIG_PATH))
 
     if not resolved.exists():
-        return WrapperConfig()
+        return WrapperConfig(default_action="allow")
 
     raw_text = resolved.read_text(encoding="utf-8")
 
@@ -720,7 +745,7 @@ def load_mcp_config(config_path: str | None = None) -> WrapperConfig:
         sys.exit(1)
 
     if data is None:
-        return WrapperConfig()
+        return WrapperConfig(default_action="allow")
 
     if not isinstance(data, dict):
         sys.exit(1)

@@ -54,7 +54,7 @@ def sample_hook_input() -> HookInput:
 @pytest.fixture
 def sample_config(tmp_dir) -> HookConfig:
     """Provide a basic HookConfig with permissive defaults."""
-    config_data = {
+    config_data = {"default_action": "allow",
         "global": {
             "max_steps": 50,
             "max_cost_usd": 10.0,
@@ -79,15 +79,14 @@ def sample_config(tmp_dir) -> HookConfig:
 @pytest.fixture
 def config_with_policies(tmp_dir) -> HookConfig:
     """Provide a config with policy rules."""
-    config_data = {
+    config_data = {"default_action": "allow",
         "global": {
             "max_steps": 50,
             "max_cost_usd": 10.0,
             "cost_per_token_usd": 0.00001,
             "loop_detection": {"threshold": 3, "window": 10},
             "policies": [
-                {
-                    "parameter": "command",
+                {"action": "block", "parameter": "command",
                     "operator": "contains",
                     "value": "rm -rf",
                     "name": "Block recursive force delete",
@@ -97,8 +96,7 @@ def config_with_policies(tmp_dir) -> HookConfig:
         "tools": {
             "Bash": {
                 "policies": [
-                    {
-                        "parameter": "command",
+                    {"action": "block", "parameter": "command",
                         "operator": "contains",
                         "value": "sudo",
                         "name": "Block sudo commands",

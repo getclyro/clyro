@@ -26,7 +26,7 @@ class TestFullAllowedFlow:
 
     def test_allowed_call_audited(self, tmp_path: Path) -> None:
         cfg = WrapperConfig.model_validate(
-            {"audit": {"log_path": str(tmp_path / "audit.jsonl")}}
+            {"default_action": "allow", "audit": {"log_path": str(tmp_path / "audit.jsonl")}}
         )
         ps = PreventionStack(cfg)
         s = McpSession()
@@ -53,7 +53,7 @@ class TestFullBlockedFlow:
     """TDD §11.2 #2 — max_steps:1, second call blocked."""
 
     def test_second_call_blocked(self) -> None:
-        cfg = WrapperConfig.model_validate({"global": {"max_steps": 1}})
+        cfg = WrapperConfig.model_validate({"default_action": "allow", "global": {"max_steps": 1}})
         ps = PreventionStack(cfg)
         s = McpSession()
 
@@ -75,7 +75,7 @@ class TestLoopDetectionIntegration:
 
     def test_third_call_blocked(self) -> None:
         cfg = WrapperConfig.model_validate(
-            {"global": {"loop_detection": {"threshold": 3, "window": 10}}}
+            {"default_action": "allow", "global": {"loop_detection": {"threshold": 3, "window": 10}}}
         )
         ps = PreventionStack(cfg)
         s = McpSession()
@@ -94,10 +94,10 @@ class TestPolicyViolationIntegration:
 
     def test_policy_blocks_high_amount(self) -> None:
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "policies": [
-                        {"parameter": "amount", "operator": "max_value", "value": 500}
+                        {"parameter": "amount", "operator": "max_value", "value": 500, "action": "block"}
                     ]
                 }
             }
@@ -139,7 +139,7 @@ class TestConcurrentCalls:
     """TDD §11.2 #8 — sequential step numbering under rapid calls."""
 
     def test_sequential_steps(self) -> None:
-        cfg = WrapperConfig.model_validate({"global": {"max_steps": 100}})
+        cfg = WrapperConfig.model_validate({"default_action": "allow", "global": {"max_steps": 100}})
         ps = PreventionStack(cfg)
         s = McpSession()
 

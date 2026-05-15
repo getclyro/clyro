@@ -11,7 +11,7 @@ from clyro.hooks.config import ConfigError, HookConfig, load_hook_config
 
 class TestHookConfig:
     def test_default_config(self):
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"max_steps": 50, "max_cost_usd": 10.0},
             "audit": {},
             "backend": {},
@@ -20,7 +20,7 @@ class TestHookConfig:
         assert config.policy_cache_ttl_seconds == 300
 
     def test_custom_cache_ttl(self):
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {},
             "backend": {},
@@ -36,7 +36,7 @@ class TestLoadHookConfig:
         assert config.global_.max_cost_usd == 10.0
 
     def test_valid_yaml(self, tmp_path):
-        config_data = {
+        config_data = {"default_action": "allow",
             "global": {"max_steps": 100, "max_cost_usd": 5.0},
         }
         path = tmp_path / "config.yaml"
@@ -54,7 +54,7 @@ class TestLoadHookConfig:
             load_hook_config(str(path))
 
     def test_env_var_override_api_key(self, tmp_path):
-        config_data = {"global": {}, "backend": {"api_key": "yaml-key"}}
+        config_data = {"default_action": "allow", "global": {}, "backend": {"api_key": "yaml-key"}}
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump(config_data))
 
@@ -63,7 +63,7 @@ class TestLoadHookConfig:
             assert config.backend.api_key == "env-key"
 
     def test_env_var_override_api_url(self, tmp_path):
-        config_data = {"global": {}}
+        config_data = {"default_action": "allow", "global": {}}
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump(config_data))
 
@@ -73,7 +73,7 @@ class TestLoadHookConfig:
 
     def test_invalid_schema_raises_config_error(self, tmp_path):
         """Schema validation errors should raise ConfigError, not SystemExit."""
-        config_data = {"global": {"max_steps": "not_a_number"}}
+        config_data = {"default_action": "allow", "global": {"max_steps": "not_a_number"}}
         path = tmp_path / "bad_schema.yaml"
         path.write_text(yaml.dump(config_data))
 
@@ -81,17 +81,17 @@ class TestLoadHookConfig:
             load_hook_config(str(path))
 
     def test_policies_in_config(self, tmp_path):
-        config_data = {
+        config_data = {"default_action": "allow",
             "global": {
                 "policies": [
-                    {"parameter": "command", "operator": "contains", "value": "rm -rf",
+                    {"action": "block", "parameter": "command", "operator": "contains", "value": "rm -rf",
                      "name": "Block rm -rf"},
                 ],
             },
             "tools": {
                 "Bash": {
                     "policies": [
-                        {"parameter": "command", "operator": "contains", "value": "sudo",
+                        {"action": "block", "parameter": "command", "operator": "contains", "value": "sudo",
                          "name": "Block sudo"},
                     ],
                 },
@@ -104,3 +104,18 @@ class TestLoadHookConfig:
         assert len(config.global_.policies) == 1
         assert config.global_.policies[0].name == "Block rm -rf"
         assert len(config.tools["Bash"].policies) == 1
+
+
+class TestDefaultActionRequired:
+    """Regression: default_action is required on HookConfig (inherited from WrapperConfig).
+
+    Locks the contract — if anyone re-introduces a default value for
+    default_action on WrapperConfig (which HookConfig extends), this test
+    will fail and force a deliberate change.
+    """
+
+    def test_missing_default_action_raises(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="default_action"):
+            HookConfig.model_validate({"global": {"max_steps": 50}})

@@ -50,12 +50,12 @@ class TestWrapperConfigBackend:
     """WrapperConfig backend integration (FRD-015)."""
 
     def test_backend_defaults_in_wrapper(self) -> None:
-        cfg = WrapperConfig()
+        cfg = WrapperConfig(default_action="allow")
         assert cfg.backend.api_key is None
         assert cfg.backend.api_url == DEFAULT_API_URL
 
     def test_backend_from_yaml_dict(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {
                 "api_key": "my-key",
                 "api_url": "https://custom.api.dev",
@@ -75,14 +75,14 @@ class TestIsBackendEnabled:
     """is_backend_enabled property (FRD-015)."""
 
     def test_disabled_when_no_key(self) -> None:
-        cfg = WrapperConfig()
+        cfg = WrapperConfig(default_action="allow")
         with patch.dict(os.environ, {}, clear=True):
             # Remove CLYRO_API_KEY if present
             os.environ.pop("CLYRO_API_KEY", None)
             assert cfg.is_backend_enabled is False
 
     def test_enabled_with_yaml_key(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {"api_key": "test-key"}
         })
         with patch.dict(os.environ, {}, clear=True):
@@ -90,12 +90,12 @@ class TestIsBackendEnabled:
             assert cfg.is_backend_enabled is True
 
     def test_enabled_with_env_key(self) -> None:
-        cfg = WrapperConfig()
+        cfg = WrapperConfig(default_action="allow")
         with patch.dict(os.environ, {"CLYRO_API_KEY": "env-key"}):
             assert cfg.is_backend_enabled is True
 
     def test_disabled_when_sync_enabled_false(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {"api_key": "test-key", "sync_enabled": False}
         })
         with patch.dict(os.environ, {}, clear=True):
@@ -107,7 +107,7 @@ class TestResolvedApiKey:
     """resolved_api_key with env var override (FRD-010 Update)."""
 
     def test_returns_yaml_key(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {"api_key": "yaml-key"}
         })
         with patch.dict(os.environ, {}, clear=True):
@@ -115,14 +115,14 @@ class TestResolvedApiKey:
             assert cfg.resolved_api_key == "yaml-key"
 
     def test_env_overrides_yaml(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {"api_key": "yaml-key"}
         })
         with patch.dict(os.environ, {"CLYRO_API_KEY": "env-key"}):
             assert cfg.resolved_api_key == "env-key"
 
     def test_returns_none_when_no_key(self) -> None:
-        cfg = WrapperConfig()
+        cfg = WrapperConfig(default_action="allow")
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("CLYRO_API_KEY", None)
             assert cfg.resolved_api_key is None
@@ -132,7 +132,7 @@ class TestResolvedApiUrl:
     """resolved_api_url with env var override (FRD-010 Update)."""
 
     def test_returns_yaml_url(self) -> None:
-        cfg = WrapperConfig.model_validate({
+        cfg = WrapperConfig.model_validate({"default_action": "allow",
             "backend": {"api_url": "https://custom.dev"}
         })
         with patch.dict(os.environ, {}, clear=True):
@@ -140,7 +140,7 @@ class TestResolvedApiUrl:
             assert cfg.resolved_api_url == "https://custom.dev"
 
     def test_env_overrides_yaml(self) -> None:
-        cfg = WrapperConfig()
+        cfg = WrapperConfig(default_action="allow")
         with patch.dict(os.environ, {"CLYRO_API_URL": "https://env.dev"}):
             assert cfg.resolved_api_url == "https://env.dev"
 
@@ -151,6 +151,6 @@ class TestLoadConfigWithBackend:
     def test_backend_key_not_unknown(self, tmp_path) -> None:
         """'backend' key should not trigger unknown key warning."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("backend:\n  api_key: test\n")
+        config_file.write_text("default_action: allow\nbackend:\n  api_key: test\n")
         cfg = load_config(str(config_file))
         assert cfg.backend.api_key == "test"

@@ -14,7 +14,7 @@ class TestStepLimit:
 
     def test_allows_under_limit(self) -> None:
         """TDD §11.1 #6 — calls 1-50 with max_steps=50 -> all allowed."""
-        cfg = WrapperConfig.model_validate({"global": {"max_steps": 50}})
+        cfg = WrapperConfig.model_validate({"default_action": "allow", "global": {"max_steps": 50}})
         ps = PreventionStack(cfg)
         s = McpSession()
         for i in range(50):
@@ -23,7 +23,7 @@ class TestStepLimit:
 
     def test_blocks_at_limit(self) -> None:
         """TDD §11.1 #7 — call 51 with max_steps=50 -> blocked."""
-        cfg = WrapperConfig.model_validate({"global": {"max_steps": 50}})
+        cfg = WrapperConfig.model_validate({"default_action": "allow", "global": {"max_steps": 50}})
         ps = PreventionStack(cfg)
         s = McpSession()
         for i in range(50):
@@ -39,7 +39,7 @@ class TestStepCounterIncludesBlocked:
     """TDD §11.1 #8 — blocked call still increments step counter."""
 
     def test_blocked_increments_step(self) -> None:
-        cfg = WrapperConfig.model_validate({"global": {"max_steps": 1}})
+        cfg = WrapperConfig.model_validate({"default_action": "allow", "global": {"max_steps": 1}})
         ps = PreventionStack(cfg)
         s = McpSession()
         # First call allowed (step=1, which is <= 1)
@@ -57,11 +57,11 @@ class TestPreventionShortCircuit:
 
     def test_short_circuit_on_loop(self) -> None:
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "loop_detection": {"threshold": 2, "window": 10},
                     "policies": [
-                        {"parameter": "x", "operator": "max_value", "value": 999},
+                        {"action": "block", "parameter": "x", "operator": "max_value", "value": 999},
                     ],
                 }
             }
@@ -81,13 +81,13 @@ class TestPreventionFullPipeline:
 
     def test_allow_all_stages(self) -> None:
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_steps": 100,
                     "max_cost_usd": 10.0,
                     "loop_detection": {"threshold": 3, "window": 10},
                     "policies": [
-                        {"parameter": "amount", "operator": "max_value", "value": 1000},
+                        {"action": "block", "parameter": "amount", "operator": "max_value", "value": 1000},
                     ],
                 }
             }
@@ -101,7 +101,7 @@ class TestPreventionFullPipeline:
     def test_budget_block(self) -> None:
         """CostTracker blocks when budget is tight."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_cost_usd": 0.0001,
                     "cost_per_token_usd": 0.01,
@@ -121,13 +121,12 @@ class TestSessionContextEnrichment:
     def test_cost_policy_triggers_on_session_cost(self) -> None:
         """Policy with field=cost blocks when session cost exceeds threshold."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_steps": 100,
                     "max_cost_usd": 10.0,
                     "policies": [
-                        {
-                            "parameter": "cost",
+                        {"action": "block", "parameter": "cost",
                             "operator": "max_value",
                             "value": 0.00005,
                             "name": "cost_limit",
@@ -149,13 +148,12 @@ class TestSessionContextEnrichment:
     def test_step_number_policy_triggers(self) -> None:
         """Policy with field=step_number and min_value blocks when step < threshold."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_steps": 100,
                     "max_cost_usd": 10.0,
                     "policies": [
-                        {
-                            "parameter": "step_number",
+                        {"action": "block", "parameter": "step_number",
                             "operator": "min_value",
                             "value": 20,
                             "name": "steps_threshold",
@@ -176,13 +174,12 @@ class TestSessionContextEnrichment:
     def test_tool_argument_not_overwritten(self) -> None:
         """Real tool argument takes priority over session context."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_steps": 100,
                     "max_cost_usd": 10.0,
                     "policies": [
-                        {
-                            "parameter": "cost",
+                        {"action": "block", "parameter": "cost",
                             "operator": "max_value",
                             "value": 50,
                             "name": "cost_cap",
@@ -204,13 +201,12 @@ class TestSessionContextEnrichment:
     def test_session_context_available_when_arg_missing(self) -> None:
         """Session context fills in when tool args don't have the field."""
         cfg = WrapperConfig.model_validate(
-            {
+            {"default_action": "allow",
                 "global": {
                     "max_steps": 100,
                     "max_cost_usd": 10.0,
                     "policies": [
-                        {
-                            "parameter": "cost",
+                        {"action": "block", "parameter": "cost",
                             "operator": "max_value",
                             "value": 0.01,
                             "name": "cost_limit",

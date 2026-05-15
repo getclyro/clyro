@@ -58,16 +58,21 @@ async def _fetch_cloud_policies(
     config: HookConfig,
     state: SessionState,
     local_policies: list[PolicyRule],
-) -> list[PolicyRule]:
-    """Fetch and merge cloud policies. Fail-open on any error."""
+) -> tuple[list[PolicyRule], str]:
+    """Fetch and merge cloud policies. Fail-open on any error.
+
+    Returns ``(merged_rules, resolved_default_action)``. The resolved default
+    is reconciled across the wrapper's local ``default_action`` and each
+    cloud policy's ``default_action`` (most-restrictive wins).
+    """
     api_key = config.resolved_api_key
     if not api_key:
-        return local_policies
+        return local_policies, config.default_action
 
     # Check circuit breaker before making API call
     if not circuit_can_execute(state.circuit_breaker):
         logger.warning("circuit_open_skip_policy_fetch")
-        return local_policies
+        return local_policies, config.default_action
 
     client = HttpSyncClient(
         api_key=api_key,
@@ -80,23 +85,24 @@ async def _fetch_cloud_policies(
         agent_id = state.agent_id
         if not agent_id:
             logger.warning("no_agent_id_for_policy_fetch", fallback="local_only")
-            return local_policies
-        merged = await fetcher.fetch_and_merge(
+            return local_policies, config.default_action
+        merged, resolved_default = await fetcher.fetch_and_merge(
             agent_id=agent_id,
             local_policies=local_policies,
             timeout=CLOUD_POLICY_TIMEOUT_SECONDS,
+            local_default_action=config.default_action,
         )
         circuit_record_success(state.circuit_breaker)
-        return merged
+        return merged, resolved_default
     except AuthenticationError as e:
         logger.warning("cloud_policy_auth_error", status_code=e.status_code)
         state.cloud_disabled = True
         circuit_record_failure(state.circuit_breaker)
-        return local_policies
+        return local_policies, config.default_action
     except Exception as e:
         logger.warning("cloud_policy_fetch_error", error=str(e))
         circuit_record_failure(state.circuit_breaker)
-        return local_policies
+        return local_policies, config.default_action
     finally:
         await client.close()
 
@@ -105,6 +111,10 @@ def get_merged_policies(config: HookConfig, state: SessionState) -> list[PolicyR
     """Return merged policy list (local YAML + cloud).
 
     FRD-HK-007: Uses TTL cache from session state. Falls back to local on failure.
+
+    As a side effect, also updates ``config.default_action`` to the resolved
+    value after reconciling the wrapper's local ``default_action`` against
+    each fetched cloud policy's ``default_action`` (most-restrictive wins).
     """
     # Collect all local policies (global + per-tool)
     local_policies: list[PolicyRule] = list(config.global_.policies)
@@ -123,17 +133,31 @@ def get_merged_policies(config: HookConfig, state: SessionState) -> list[PolicyR
     if _cache_is_fresh(state.policy_cache):
         cached = _policies_from_cache(state.policy_cache)
         if cached is not None:
+            # Restore the merged default_action from the cache so a fresh
+            # config load on each event still honors the cloud policy's
+            # default_action. Without this, the cache hit would revert to
+            # the local-only default and drop the cloud's centrally-mandated
+            # block (or allow).
+            cached_default = state.policy_cache.resolved_default_action
+            if cached_default in ("block", "allow"):
+                config.default_action = cached_default
             return cached
         logger.warning("cache_invalidated_corrupt_entries", fallback="re-fetch")
 
     # Fetch from cloud
     try:
-        merged = asyncio.run(_fetch_cloud_policies(config, state, local_policies))
-        # Update cache in state
+        merged, resolved_default = asyncio.run(_fetch_cloud_policies(config, state, local_policies))
+        # Apply the resolved default_action to the wrapper config so the
+        # local evaluator picks it up. Without this, the cloud policy's
+        # default_action would be silently lost.
+        config.default_action = resolved_default
+        # Update cache in state — store the resolved default alongside the
+        # rules so cache-hit on the next event can restore it.
         state.policy_cache = PolicyCache(
             fetched_at=datetime.now(UTC),
             ttl_seconds=config.policy_cache_ttl_seconds,
             merged_policies=[p.model_dump() for p in merged],
+            resolved_default_action=resolved_default,
         )
         return merged
     except Exception as e:

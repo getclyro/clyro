@@ -171,7 +171,7 @@ class TestQuietModeIntegration:
         monkeypatch.setenv("CLYRO_QUIET", "true")
 
         (policy_dir / "policies.yaml").write_text(
-            "version: 1\nglobal:\n  policies: []\n", encoding="utf-8",
+            "version: 1\ndefault_action: allow\nglobal:\n  policies: []\n", encoding="utf-8",
         )
 
         config = ClyroConfig(mode="local")
@@ -209,7 +209,7 @@ class TestNetworkIsolation:
     def test_no_socket_calls_in_local_mode(self, policy_dir: Path, monkeypatch):
         """Patch socket.socket to raise — full local run must succeed."""
         (policy_dir / "policies.yaml").write_text(
-            "version: 1\nglobal:\n  policies: []\n", encoding="utf-8",
+            "version: 1\ndefault_action: allow\nglobal:\n  policies: []\n", encoding="utf-8",
         )
 
         original_socket = socket.socket

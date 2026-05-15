@@ -55,6 +55,7 @@ class HookConfig(WrapperConfig):
 def _hook_defaults() -> dict[str, Any]:
     """Return permissive defaults for when no config file exists."""
     return {
+        "default_action": "allow",
         "global": {
             "max_steps": DEFAULT_MAX_STEPS,
             "max_cost_usd": DEFAULT_MAX_COST_USD,

@@ -47,7 +47,7 @@ def mock_state(tmp_path):
 class TestHandleToolComplete:
     def test_adjusts_cost(self, mock_state, tmp_path):
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"cost_per_token_usd": 0.00001},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {},
@@ -71,7 +71,7 @@ class TestHandleToolComplete:
     def test_writes_audit_entry(self, mock_state, tmp_path):
         audit_path = tmp_path / "audit.jsonl"
         audit = AuditLogger(log_path=audit_path)
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {"log_path": str(audit_path)},
             "backend": {},
@@ -97,7 +97,7 @@ class TestHandleToolCompleteTraceFields:
         """FRD-HK-008: duration_ms should be included in audit entry."""
         audit_path = tmp_path / "audit.jsonl"
         audit = AuditLogger(log_path=audit_path)
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"cost_per_token_usd": 0.00001},
             "audit": {"log_path": str(audit_path)},
             "backend": {},
@@ -130,7 +130,7 @@ class TestHandleToolCompleteAgentId:
         )
         audit_path = tmp_path / "audit.jsonl"
         audit = AuditLogger(log_path=audit_path)
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"cost_per_token_usd": 0.00001},
             "audit": {"log_path": str(audit_path)},
             "backend": {},
@@ -160,7 +160,7 @@ class TestHandleToolCompleteEventQueue:
             pre_call_cost_estimate=0.002,
         )
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"cost_per_token_usd": 0.00001},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {"api_key": "test-key"},
@@ -191,7 +191,7 @@ class TestHandleToolCompleteEventQueue:
             pre_call_cost_estimate=0.002,
         )
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {"cost_per_token_usd": 0.00001},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {"api_key": "test-key"},
@@ -226,7 +226,7 @@ class TestHandleSessionEnd:
     def test_writes_session_summary(self, mock_state, tmp_path):
         audit_path = tmp_path / "audit.jsonl"
         audit = AuditLogger(log_path=audit_path)
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {"log_path": str(audit_path)},
             "backend": {},
@@ -245,7 +245,7 @@ class TestHandleSessionEnd:
     def test_session_end_flushes_event_queue(self, mock_state, tmp_path):
         """FRD-HK-009: Session-end should flush all queued events."""
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {"api_key": "test-key"},
@@ -262,7 +262,7 @@ class TestHandleSessionEnd:
     def test_session_end_uses_create_trace_event(self, mock_state, tmp_path):
         """FRD-HK-009: session_end uses create_trace_event with event_id, metadata."""
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        config = HookConfig.model_validate({
+        config = HookConfig.model_validate({"default_action": "allow",
             "global": {},
             "audit": {"log_path": str(tmp_path / "audit.jsonl")},
             "backend": {"api_key": "test-key"},

@@ -107,25 +107,30 @@ clyro-mcp wrap --config mcp_governance.yaml -- npx @modelcontextprotocol/server-
 Create `~/.clyro/sdk/policies.yaml`:
 
 ```yaml
-rules:
-  - name: cost-cap
-    action_type: llm_call
-    conditions:
-      - field: cost
-        operator: max_value
-        value: 5.0
-    decision: block
-    message: "Session cost exceeded $5.00 limit"
+version: 1
+default_action: allow            # required; decision when no rule matches
 
-  - name: block-dangerous-tool
-    action_type: tool_call
-    conditions:
-      - field: tool_name
-        operator: equals
+actions:
+  llm_call:
+    policies:
+      - name: cost-cap
+        parameter: cost
+        operator: max_value      # matches when cost > 5.0
+        value: 5.0
+        action: block            # matched → block (action is required)
+
+  tool_call:
+    policies:
+      - name: block-dangerous-tool
+        parameter: tool_name
+        operator: equals         # matches when tool_name == "delete_database"
         value: "delete_database"
-    decision: block
-    message: "Database deletion not allowed"
+        action: block
 ```
+
+Both `default_action` (root) and per-rule `action` are **required**. Each rule
+fires its `action` when its condition matches; `default_action` is the
+fallback when no rule matches.
 
 ### Connect to Cloud (optional)
 

@@ -322,6 +322,7 @@ The wrapper looks for `~/.clyro/mcp-wrapper/mcp-config.yaml` by default. If the 
 **Minimal config** (just set limits):
 
 ```yaml
+default_action: allow        # required at top level
 global:
   max_steps: 100
   max_cost_usd: 20.0
@@ -330,6 +331,8 @@ global:
 **Full example:**
 
 ```yaml
+default_action: allow        # required: decision when no rule matches
+
 global:
   max_steps: 100          # Block after this many tool calls in a session
   max_cost_usd: 20.0      # Block when estimated cost exceeds this (USD)
@@ -340,23 +343,26 @@ global:
     window: 10             # ...within the last M calls
 
   policies:                # Global rules — applied to every tool call
-    - parameter: "amount"
-      operator: "max_value"
+    - name: "Max $1000 per transaction"
+      parameter: "amount"
+      operator: "max_value"  # matches when amount > 1000
       value: 1000
-      name: "Max $1000 per transaction"
+      action: block          # required: matched → block
 
-    - parameter: "destination"
-      operator: "not_in_list"
+    - name: "Block external transfers"
+      parameter: "destination"
+      operator: "in_list"    # matches when destination is in the listed external accounts
       value: ["external-account-1", "external-account-2"]
-      name: "Block external transfers"
+      action: block
 
 tools:
-  transfer_funds:          # Per-tool overrides
+  transfer_funds:          # Per-tool rules (in addition to global)
     policies:
-      - parameter: "amount"
+      - name: "Stricter limit for fund transfers"
+        parameter: "amount"
         operator: "max_value"
         value: 500
-        name: "Stricter limit for fund transfers"
+        action: block
 
 audit:
   log_path: "~/.clyro/mcp-wrapper/mcp-audit.jsonl"
@@ -375,18 +381,29 @@ backend:
 
 ### Policy operators
 
-| Operator | Description | `value` type |
+Each operator's condition **matches** when the predicate below is true; the
+matched rule's `action` is then the decision. If no rule matches, the wrapper's
+`default_action` applies.
+
+| Operator | Matches when | `value` type |
 |---|---|---|
-| `max_value` | Parameter must be ≤ value | number |
-| `min_value` | Parameter must be ≥ value | number |
-| `equals` | Parameter must equal value | any |
-| `not_equals` | Parameter must not equal value | any |
-| `in_list` | Parameter must be one of the values | list |
-| `not_in_list` | Parameter must not be in the list | list |
-| `contains` | Parameter must contain substring | string |
-| `not_contains` | Parameter must not contain substring | string |
+| `max_value` | `field > value` | number |
+| `min_value` | `field < value` | number |
+| `equals` | `field == value` | scalar |
+| `not_equals` | `field != value` | scalar |
+| `in_list` | `field IS in the list` | list |
+| `not_in_list` | `field IS NOT in the list` | list |
+| `contains` | `value IS substring of field` (case-insensitive) | string |
+| `not_contains` | `value IS NOT substring of field` (case-insensitive) | string |
 
 The `parameter` field supports dot-notation for nested keys (`user.id`) and wildcards (`*.amount`).
+
+When the wrapper is cloud-connected (`backend.api_key` set), each fetched cloud
+policy's own `default_action` is merged into the wrapper using
+**most-restrictive-wins** — if either the wrapper or any cloud policy declares
+`block`, the resolved default is `block`. This survives the per-session cache
+TTL so a centrally-mandated denylist can't be silently weakened by a local
+override.
 
 ---
 
@@ -401,6 +418,8 @@ clyro-mcp wrap --config /path/to/my_governance.yaml <server-command>
 ### What you can define in the config file
 
 ```yaml
+default_action: allow             # required at top level
+
 global:
   max_steps: 20
   max_cost_usd: 5.0

@@ -68,6 +68,8 @@ cp claude-code-policy.example.yaml ~/.clyro/hooks/claude-code-policy.yaml
 Or start with a minimal config:
 
 ```yaml
+default_action: allow            # required at top level
+
 global:
   max_steps: 50
   max_cost_usd: 10.0
@@ -235,6 +237,8 @@ The hook looks for `~/.clyro/hooks/claude-code-policy.yaml` by default. Pass `--
 ### Minimal config
 
 ```yaml
+default_action: allow            # required at top level
+
 global:
   max_steps: 50
   max_cost_usd: 10.0
@@ -243,6 +247,9 @@ global:
 ### Full example
 
 ```yaml
+# default_action is REQUIRED at the top level (decision when no rule matches).
+default_action: allow
+
 # ── Global limits ───────────────────────────────────────────────────────
 global:
   max_steps: 50              # Max tool calls per session before blocking
@@ -253,17 +260,20 @@ global:
     threshold: 3             # Block if same tool+args repeated this many times
     window: 10               # Within the most recent N tool calls
 
-  # Global policies — evaluated for ALL tools
+  # Global policies — evaluated for ALL tools.
+  # Each rule MUST declare its action (block | allow | require_approval).
   policies:
     - name: "Block recursive force delete"
       parameter: command
-      operator: not_contains
+      operator: contains       # matches when command contains "rm -rf"
       value: "rm -rf"
+      action: block
 
     - name: "Block /etc writes"
       parameter: command
-      operator: not_contains
+      operator: contains
       value: "/etc/"
+      action: block
 
 # ── Per-tool policies ─────────────────────────────────────────────────
 tools:
@@ -271,13 +281,15 @@ tools:
     policies:
       - name: "Block sudo commands"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "sudo"
+        action: block
 
       - name: "Block curl to external"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "curl"
+        action: block
 
 # ── Cloud backend (optional) ─────────────────────────────────────────
 backend:
@@ -298,16 +310,20 @@ audit:
 
 ### Policy operators
 
-| Operator | Description | `value` type |
+Every operator's condition **matches** when the predicate below is true; the
+matched rule's `action` (`block` | `allow` | `require_approval`) is then the
+decision. If no rule matches, the wrapper's `default_action` applies.
+
+| Operator | Matches when | `value` type |
 |---|---|---|
-| `max_value` | Parameter must be ≤ value | number |
-| `min_value` | Parameter must be ≥ value | number |
-| `equals` | Parameter must equal value | any |
-| `not_equals` | Parameter must not equal value | any |
-| `in_list` | Parameter must be one of the values | list |
-| `not_in_list` | Parameter must not be in the list | list |
-| `contains` | Parameter must contain substring | string |
-| `not_contains` | Parameter must not contain substring | string |
+| `max_value` | `field > value` | number |
+| `min_value` | `field < value` | number |
+| `equals` | `field == value` | scalar |
+| `not_equals` | `field != value` | scalar |
+| `in_list` | `field IS in the list` | list |
+| `not_in_list` | `field IS NOT in the list` | list |
+| `contains` | `value IS substring of field` (case-insensitive) | string |
+| `not_contains` | `value IS NOT substring of field` (case-insensitive) | string |
 
 ### Synthetic parameters
 
@@ -324,13 +340,16 @@ In addition to the tool's own parameters, the hook injects synthetic `_clyro_*` 
 **Example:** Block all tool calls after step 25 specifically for the `Write` tool:
 
 ```yaml
+default_action: allow
+
 tools:
   Write:
     policies:
       - name: "Limit Write tool to first 25 steps"
         parameter: _clyro_step_number
-        operator: max_value
+        operator: max_value          # matches when step_number > 25
         value: 25
+        action: block                # matched (past step 25) → block
 ```
 
 ---
@@ -467,47 +486,61 @@ Session files older than 24 hours are automatically cleaned up at session-end.
 ### Block dangerous shell commands
 
 ```yaml
+default_action: allow
+
 global:
   policies:
     - name: "Block rm -rf"
       parameter: command
-      operator: not_contains
+      operator: contains          # matches when command contains "rm -rf"
       value: "rm -rf"
+      action: block
 
     - name: "Block system shutdown"
       parameter: command
-      operator: not_contains
+      operator: contains
       value: "shutdown"
+      action: block
 
 tools:
   Bash:
     policies:
       - name: "Block sudo"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "sudo"
+        action: block
 
       - name: "Block package installs"
         parameter: command
-        operator: not_contains
+        operator: contains
         value: "pip install"
+        action: block
 ```
 
 ### Restrict file writes to specific directories
 
+To enforce an allowlist of safe paths, pair `not_contains` (matches when the
+path is *not* inside your project) with `action: block`:
+
 ```yaml
+default_action: allow
+
 tools:
   Write:
     policies:
       - name: "Block writes outside project"
         parameter: file_path
-        operator: contains
+        operator: not_contains    # matches when file_path lacks the safe prefix
         value: "/home/user/my-project"
+        action: block
 ```
 
 ### Set strict limits for expensive sessions
 
 ```yaml
+default_action: allow
+
 global:
   max_steps: 25
   max_cost_usd: 5.0

@@ -104,12 +104,12 @@ class TestMcpConfigConsolidation:
 
     def test_policy_rule(self):
         from clyro.config import PolicyRule
-        rule = PolicyRule(parameter="amount", operator="max_value", value=100)
+        rule = PolicyRule(parameter="amount", operator="max_value", value=100, action="block")
         assert rule.parameter == "amount"
 
     def test_wrapper_config(self):
         from clyro.config import WrapperConfig
-        config = WrapperConfig()
+        config = WrapperConfig(default_action="allow")
         assert config.global_.max_steps == 50
 
     def test_loop_detection_config(self):
