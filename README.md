@@ -17,7 +17,7 @@ One `pip install`, three tools:
 
 ## What is Clyro?
 
-Clyro is a governance platform for AI agents. While most tools let you watch agents fail, Clyro stops failures before they happen — catching infinite loops, runaway costs, and policy violations in real time.
+Clyro is a governance platform for AI agents. While most tools let you watch agents fail, Clyro stops failures before they happen, catching infinite loops, runaway costs, and policy violations in real time.
 
 **Works fully offline.** No API key required. Install, wrap, and get governance immediately with local YAML policies. Optionally connect to Clyro Cloud for team dashboards, shared policies, and session replay.
 
