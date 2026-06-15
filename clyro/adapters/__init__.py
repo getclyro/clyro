@@ -45,6 +45,7 @@ from clyro.adapters.langgraph import (
     validate_langgraph_version,
 )
 from clyro.adapters.openai import (
+    AsyncOpenAITracedClient,
     OpenAIAdapter,
     OpenAITracedClient,
     is_openai_agent,
@@ -80,6 +81,7 @@ __all__ = [
     # OpenAI-compatible SDK adapter (FRD-SDK-001–006)
     "OpenAIAdapter",
     "OpenAITracedClient",
+    "AsyncOpenAITracedClient",
     "is_openai_agent",
     "validate_openai_version",
 ]

@@ -26,6 +26,7 @@ import pytest
 from clyro.adapters.generic import detect_adapter
 from clyro.adapters.openai import (
     CACHED_INPUT_DISCOUNT,
+    AsyncOpenAITracedClient,
     OpenAIAdapter,
     OpenAITracedClient,
     is_openai_agent,
@@ -151,6 +152,51 @@ class MockToolCallDelta:
         self.function = MockFunction(name, arguments) if (name is not None or arguments is not None) else None
 
 
+# Async client mocks --------------------------------------------------------
+
+
+class MockAsyncStream:
+    """Async-iterable stream of chunks (what `await client...create(stream=True)` returns)."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class MockAsyncCompletions:
+    def __init__(self, response=None, error=None, stream_chunks=None):
+        self._response = response
+        self._error = error
+        self._stream_chunks = stream_chunks
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        if kwargs.get("stream"):
+            return MockAsyncStream(self._stream_chunks or [])
+        return self._response if self._response is not None else MockCompletion()
+
+
+class MockAsyncChat:
+    def __init__(self, completions: MockAsyncCompletions):
+        self.completions = completions
+
+
+class MockAsyncOpenAIClient:
+    """Looks like openai.AsyncOpenAI for detection (module + class name)."""
+
+    def __init__(self, completions: MockAsyncCompletions | None = None):
+        self.chat = MockAsyncChat(completions or MockAsyncCompletions())
+        self.api_key = "sk-test"
+        type(self).__module__ = "openai._client"
+        type(self).__name__ = "AsyncOpenAI"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -203,10 +249,11 @@ class TestDetection:
         assert isinstance(traced, OpenAITracedClient)
         traced.close()
 
-    def test_async_client_raises_clear_error(self, config):
-        adapter = OpenAIAdapter(client=MockOpenAIClient(name="AsyncOpenAI"), config=config, validate_version=False)
-        with pytest.raises(ClyroWrapError, match="Async"):
-            adapter.create_traced_client()
+    def test_async_client_returns_async_traced_client(self, config):
+        # Async clients are now traced (not rejected) — they get the async proxy.
+        adapter = OpenAIAdapter(client=MockAsyncOpenAIClient(), config=config, validate_version=False)
+        traced = adapter.create_traced_client()
+        assert isinstance(traced, AsyncOpenAITracedClient)
 
     def test_double_wrap_rejected(self, config):
         traced = _traced(MockOpenAIClient(), config)
@@ -510,6 +557,164 @@ class TestStreamingHardening:
         # usage-only chunk is swallowed, leaving just the tool-delta chunk.
         assert len(collected) == 1
         traced.close()
+
+
+# ---------------------------------------------------------------------------
+# Async adapter (openai.AsyncOpenAI) — mirrors the sync coverage
+# ---------------------------------------------------------------------------
+
+
+def _async_traced(client: MockAsyncOpenAIClient, config: ClyroConfig) -> AsyncOpenAITracedClient:
+    adapter = OpenAIAdapter(
+        client=client, config=config, agent_id=TEST_AGENT_ID, org_id=TEST_ORG_ID, validate_version=False
+    )
+    return adapter.create_traced_client()
+
+
+def _async_events(traced: AsyncOpenAITracedClient, event_type: EventType) -> list:
+    session = traced._session
+    return [e for e in session.events if e.event_type == event_type] if session else []
+
+
+async def _adrain(stream) -> list:
+    return [chunk async for chunk in stream]
+
+
+class TestAsyncAdapter:
+    async def test_returns_async_client(self, config):
+        traced = _async_traced(MockAsyncOpenAIClient(), config)
+        assert isinstance(traced, AsyncOpenAITracedClient)
+        await traced.close()
+
+    async def test_emits_llm_call_with_tokens_cost(self, config):
+        client = MockAsyncOpenAIClient(MockAsyncCompletions(MockCompletion(usage=MockUsage(200, 100))))
+        traced = _async_traced(client, config)
+        await traced.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
+
+        llm = _async_events(traced, EventType.LLM_CALL)
+        assert len(llm) == 1
+        assert llm[0].event_name == "gpt-4o"
+        assert llm[0].token_count_input == 200  # VR-S1
+        assert llm[0].token_count_output == 100
+        assert llm[0].cost_usd > Decimal("0")
+        assert llm[0].framework == Framework.OPENAI
+        await traced.close()
+
+    async def test_returns_original_response_unchanged(self, config):
+        response = MockCompletion()
+        traced = _async_traced(MockAsyncOpenAIClient(MockAsyncCompletions(response)), config)
+        result = await traced.chat.completions.create(model="gpt-4o", messages=[])
+        assert result is response
+        await traced.close()
+
+    async def test_api_exception_emits_error_and_reraises_unchanged(self, config):
+        boom = RuntimeError("rate limited")
+        traced = _async_traced(MockAsyncOpenAIClient(MockAsyncCompletions(error=boom)), config)
+        with pytest.raises(RuntimeError) as exc:
+            await traced.chat.completions.create(model="gpt-4o", messages=[])
+        assert exc.value is boom  # re-raised unchanged
+        errors = _async_events(traced, EventType.ERROR)
+        assert len(errors) == 1 and errors[0].error_type == "RuntimeError"
+        await traced.close()
+
+    async def test_tool_calls_emitted_and_linked(self, config):
+        message = MockMessage(
+            content=None,
+            tool_calls=[MockToolCall("call_1", "search", '{"q": "x"}'), MockToolCall("call_2", "calc", '{"a": 1}')],
+        )
+        response = MockCompletion(choices=[MockChoice(message, finish_reason="tool_calls")])
+        traced = _async_traced(MockAsyncOpenAIClient(MockAsyncCompletions(response)), config)
+        await traced.chat.completions.create(model="gpt-4o", messages=[])
+
+        tools = _async_events(traced, EventType.TOOL_CALL)
+        llm = _async_events(traced, EventType.LLM_CALL)
+        assert {t.event_name for t in tools} == {"search", "calc"}
+        assert all(t.parent_event_id == llm[0].event_id for t in tools)  # VR-S2
+        await traced.close()
+
+    async def test_tracing_failure_does_not_break_call(self, config, monkeypatch):
+        # NFR-SDK-002: a Clyro-internal error must not break the agent's call.
+        traced = _async_traced(MockAsyncOpenAIClient(), config)
+        monkeypatch.setattr(
+            traced.chat.completions, "_extract_tokens", lambda r: (_ for _ in ()).throw(ValueError("boom"))
+        )
+        result = await traced.chat.completions.create(model="gpt-4o", messages=[])
+        assert result is not None
+        await traced.close()
+
+    async def test_policy_block_raises_violation(self, config, monkeypatch):
+        from clyro.session import Session
+
+        async def _block(self, action_type, parameters=None, **kw):
+            if action_type == "tool_call":
+                raise PolicyViolationError(rule_id="r1", rule_name="n", message="blocked", action_type="tool_call")
+
+        monkeypatch.setattr(Session, "check_policy_async", _block)
+        message = MockMessage(content=None, tool_calls=[MockToolCall("c1", "danger", "{}")])
+        response = MockCompletion(choices=[MockChoice(message, "tool_calls")])
+        traced = _async_traced(MockAsyncOpenAIClient(MockAsyncCompletions(response)), config)
+        with pytest.raises(PolicyViolationError):
+            await traced.chat.completions.create(model="gpt-4o", messages=[])
+        await traced.close()
+
+    async def test_input_policy_blocks_before_api_call(self, config, monkeypatch):
+        from clyro.session import Session
+
+        async def _block(self, action_type, parameters=None, **kw):
+            if action_type == "llm_call":
+                raise PolicyViolationError(rule_id="r", rule_name="n", message="blocked", action_type="llm_call")
+
+        monkeypatch.setattr(Session, "check_policy_async", _block)
+        completions = MockAsyncCompletions()
+        traced = _async_traced(MockAsyncOpenAIClient(completions), config)
+        with pytest.raises(PolicyViolationError):
+            await traced.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "bad"}])
+        assert completions.calls == []  # blocked pre-call — provider never hit
+        await traced.close()
+
+    async def test_step_limit_enforced(self):
+        cfg = ClyroConfig(agent_name="t", controls=ExecutionControls(max_steps=1, enable_step_limit=True))
+        traced = _async_traced(MockAsyncOpenAIClient(), cfg)
+        await traced.chat.completions.create(model="gpt-4o", messages=[])  # step 1 — ok
+        with pytest.raises(StepLimitExceededError):
+            await traced.chat.completions.create(model="gpt-4o", messages=[])  # step 2 > limit
+        await traced.close()
+
+    async def test_streaming_captures_real_usage_and_swallows_induced_chunk(self, config):
+        # content chunk, then a usage-only chunk (what the provider returns once we
+        # inject include_usage). The usage-only chunk must be swallowed from the caller.
+        chunks = [
+            MockChunk(choices=[MockChunkChoice(MockDelta(content="Hello"))]),
+            MockChunk(choices=[], usage=MockUsage(200, 100)),
+        ]
+        completions = MockAsyncCompletions(stream_chunks=chunks)
+        traced = _async_traced(MockAsyncOpenAIClient(completions), config)
+        stream = await traced.chat.completions.create(model="gpt-4o", messages=[], stream=True)
+        collected = await _adrain(stream)
+
+        assert completions.calls[0].get("stream_options") == {"include_usage": True}
+        assert len(collected) == 1  # induced usage-only chunk swallowed
+        llm = _async_events(traced, EventType.LLM_CALL)
+        assert len(llm) == 1
+        assert llm[0].token_count_input == 200  # real usage, not estimated
+        assert llm[0].metadata.get("estimated") is None
+        await traced.close()
+
+    async def test_streaming_estimates_when_usage_absent(self, config):
+        chunks = [MockChunk(choices=[MockChunkChoice(MockDelta(content="abcd" * 4))])]  # no usage chunk
+        traced = _async_traced(MockAsyncOpenAIClient(MockAsyncCompletions(stream_chunks=chunks)), config)
+        stream = await traced.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True)
+        await _adrain(stream)
+        llm = _async_events(traced, EventType.LLM_CALL)
+        assert len(llm) == 1
+        assert llm[0].metadata.get("estimated") is True  # VR-S3
+        assert llm[0].token_count_output >= 1  # never zero
+        await traced.close()
+
+    async def test_async_context_manager_closes(self, config):
+        async with _async_traced(MockAsyncOpenAIClient(), config) as traced:
+            await traced.chat.completions.create(model="gpt-4o", messages=[])
+        assert traced._closed is True
 
 
 # ---------------------------------------------------------------------------

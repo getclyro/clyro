@@ -25,9 +25,13 @@ Architecture (mirrors the Anthropic adapter):
             -> tool_calls detection -> TOOL_CALL events + Prevention Stack
         -> Return response (or a wrapped stream) to user
 
-Scope (S2 / FRD-SDK-001..006): this implements the synchronous OpenAI client.
-Async (`openai.AsyncOpenAI`) is detected (FRD-SDK-001) but not yet traced — see
-``create_traced_client`` — an intentional, documented follow-up.
+Scope (S2 / FRD-SDK-001..006): both the synchronous ``openai.OpenAI`` client and
+the asynchronous ``openai.AsyncOpenAI`` client are traced. Sync clients use
+``OpenAITracedClient`` (over ``SyncTransport``); async clients use
+``AsyncOpenAITracedClient`` (over the async ``Transport``) — the async traced
+completions reuse all of the sync adapter's pure logic (cost, token extraction,
+tool parsing, prevention stack) via subclassing, overriding only the awaitable
+I/O paths (mirrors the Anthropic adapter's sync/async split).
 
 Note: the ``openai`` package is an optional/peer dependency. It is never imported
 at module level — only the installed version is inspected when validating.
@@ -65,7 +69,7 @@ from clyro.trace import (
     create_llm_call_event,
     create_tool_call_event,
 )
-from clyro.transport import SyncTransport
+from clyro.transport import SyncTransport, Transport
 
 if TYPE_CHECKING:
     from clyro.config import ClyroConfig
@@ -288,44 +292,54 @@ class OpenAIAdapter:
     def framework_version(self) -> str | None:
         return self.FRAMEWORK_VERSION
 
-    def create_traced_client(self) -> OpenAITracedClient:
+    def _build_policy_evaluator(self) -> PolicyEvaluator | SDKLocalPolicyEvaluator | None:
+        """Build the policy evaluator, supporting cloud and local modes.
+
+        Policy enforcement works in BOTH modes when enabled: cloud uses the
+        backend PolicyEvaluator (needs an api_key); local mode uses the YAML-based
+        SDKLocalPolicyEvaluator — so enforcement applies even with no api_key.
+        Both expose evaluate_sync/evaluate_async, so the same evaluator serves the
+        sync and async traced clients.
+        """
+        if not self._config.controls.enable_policy_enforcement:
+            return None
+        if self._config.mode == "local":
+            return SDKLocalPolicyEvaluator(approval_handler=self._approval_handler)
+        if self._config.api_key:
+            return PolicyEvaluator(
+                config=self._config,
+                agent_id=self._agent_id,
+                org_id=self._org_id,
+                approval_handler=self._approval_handler,
+            )
+        return None
+
+    def create_traced_client(self) -> OpenAITracedClient | AsyncOpenAITracedClient:
         """
         Create a traced client proxy.  # Implements FRD-SDK-001, FRD-SDK-002
 
-        Async clients are detected (FRD-SDK-001) but not yet traced — raising a
-        clear error is safer than silently mis-tracing. Async support is a
-        documented follow-up.
+        Async clients (openai.AsyncOpenAI) get an AsyncOpenAITracedClient over the
+        async Transport; sync clients get an OpenAITracedClient over SyncTransport.
         """
+        policy_evaluator = self._build_policy_evaluator()
+
         if self._is_async:
-            raise ClyroWrapError(
-                message=(
-                    "Async OpenAI clients are not yet supported by the Clyro OpenAI "
-                    "adapter; wrap a synchronous openai.OpenAI client."
-                ),
-                agent_type=type(self._client).__name__,
+            return AsyncOpenAITracedClient(
+                client=self._client,
+                config=self._config,
+                transport=Transport(self._config),
+                policy_evaluator=policy_evaluator,
+                agent_id=self._agent_id,
+                org_id=self._org_id,
+                framework=self._framework,
+                framework_version=self.FRAMEWORK_VERSION,
+                inject_stream_usage=self._inject_stream_usage,
             )
-
-        transport = SyncTransport(self._config)
-
-        # Policy enforcement works in BOTH modes when enabled: cloud uses the
-        # backend PolicyEvaluator (needs an api_key); local mode uses the YAML-based
-        # SDKLocalPolicyEvaluator — so enforcement applies even with no api_key.
-        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None = None
-        if self._config.controls.enable_policy_enforcement:
-            if self._config.mode == "local":
-                policy_evaluator = SDKLocalPolicyEvaluator(approval_handler=self._approval_handler)
-            elif self._config.api_key:
-                policy_evaluator = PolicyEvaluator(
-                    config=self._config,
-                    agent_id=self._agent_id,
-                    org_id=self._org_id,
-                    approval_handler=self._approval_handler,
-                )
 
         return OpenAITracedClient(
             client=self._client,
             config=self._config,
-            transport=transport,
+            transport=SyncTransport(self._config),
             policy_evaluator=policy_evaluator,
             agent_id=self._agent_id,
             org_id=self._org_id,
@@ -1143,3 +1157,552 @@ class TracedCompletions:
         except Exception as e:
             logger.warning("output_serialization_failed", error=str(e))
             return None
+
+
+# ---------------------------------------------------------------------------
+# Async traced client proxy (openai.AsyncOpenAI)
+# ---------------------------------------------------------------------------
+
+
+class _AsyncTracedChat:
+    """Proxy for `client.chat` that swaps in the async traced `.completions`."""
+
+    def __init__(self, original_chat: Any, traced_completions: AsyncTracedCompletions):
+        self._original_chat = original_chat
+        self._traced_completions = traced_completions
+
+    @property
+    def completions(self) -> AsyncTracedCompletions:
+        return self._traced_completions
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._original_chat, name)
+
+
+class AsyncOpenAITracedClient:
+    """
+    Transparent proxy around openai.AsyncOpenAI with Clyro tracing.  # Implements FRD-SDK-002
+
+    Async counterpart of OpenAITracedClient. Uses the async Transport, an async
+    session/buffer path, and the AsyncTracedCompletions namespace; everything
+    else passes through. Mirrors AsyncAnthropicTracedClient.
+    """
+
+    _clyro_wrapped: bool = True
+
+    def __init__(
+        self,
+        client: Any,
+        config: ClyroConfig,
+        transport: Transport,
+        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None,
+        agent_id: UUID | None,
+        org_id: UUID | None,
+        framework: Framework,
+        framework_version: str | None,
+        inject_stream_usage: bool = False,
+    ):
+        self._client = client
+        self._config = config
+        self._transport = transport
+        self._policy_evaluator = policy_evaluator
+        self._agent_id = agent_id
+        self._org_id = org_id
+        self._framework = framework
+        self._framework_version = framework_version
+        self._session: Session | None = None
+        self._closed = False
+        self._background_sync_started = False
+
+        traced_completions = AsyncTracedCompletions(
+            original_completions=client.chat.completions,
+            config=config,
+            transport=transport,
+            policy_evaluator=policy_evaluator,
+            agent_id=agent_id,
+            org_id=org_id,
+            framework=framework,
+            framework_version=framework_version,
+            get_session=self._ensure_session,
+            buffer_event=self._buffer_event,
+            inject_stream_usage=inject_stream_usage,
+        )
+        self._traced_chat = _AsyncTracedChat(client.chat, traced_completions)
+
+    async def _start_background_sync(self) -> None:
+        if self._background_sync_started:
+            return
+        try:
+            await self._transport.start_background_sync()
+            self._background_sync_started = True
+        except Exception as e:
+            logger.warning("background_sync_start_failed", error=str(e), fail_open=True)
+
+    async def _ensure_session(self) -> Session:
+        """Lazily create/start a session on first use (async).  # Implements FRD-SDK-002"""
+        if not self._background_sync_started and not self._config.is_local_only():
+            await self._start_background_sync()
+
+        if self._session is not None and self._session.is_active:
+            return self._session
+
+        # Carry over step/cost counters and the loop detector from a previous
+        # (auto-flushed) session so execution-control limits accumulate across the
+        # tool-loop turns of one logical agent run.
+        prev_step = 0
+        prev_cost = Decimal("0")
+        prev_loop_detector = None
+        if self._session is not None:
+            prev_step = self._session._step_number
+            prev_cost = self._session._cumulative_cost
+            prev_loop_detector = self._session._loop_detector
+
+        self._session = Session(
+            config=self._config,
+            agent_id=self._agent_id,
+            org_id=self._org_id,
+            framework=self._framework,
+            framework_version=self._framework_version,
+            agent_name=self._config.agent_name,
+            policy_evaluator=self._policy_evaluator,
+        )
+        # Transport is async-only; the session's policy-event sink must be sync,
+        # so it appends to the session's event list (mirrors the async Anthropic
+        # client). The async emit paths buffer LLM/TOOL/ERROR events directly.
+        self._session._event_sink = self._buffer_event_sync
+        self._session._step_number = prev_step
+        self._session._cumulative_cost = prev_cost
+        if prev_loop_detector is not None:
+            self._session._loop_detector = prev_loop_detector
+        start_event = self._session.start()
+        if start_event is not None:
+            await self._buffer_event(start_event)
+        return self._session
+
+    def _buffer_event_sync(self, event: TraceEvent) -> None:
+        """Sync event sink for session policy events (appends to the session)."""
+        try:
+            if self._session is not None:
+                self._session._events.append(event)
+        except Exception as e:
+            if self._config.fail_open:
+                logger.warning("event_buffer_failed", error=str(e), fail_open=True)
+            else:
+                raise
+
+    async def _buffer_event(self, event: TraceEvent) -> None:
+        """Buffer an event to the async transport with fail-open behavior.  # Implements NFR-SDK-002"""
+        try:
+            await self._transport.buffer_event(event)
+        except Exception as e:
+            if self._config.fail_open:
+                logger.warning("event_buffer_failed", error=str(e), fail_open=True)
+            else:
+                raise
+
+    @property
+    def chat(self) -> _AsyncTracedChat:
+        """Instrumented chat namespace.  # Implements FRD-SDK-002, FRD-SDK-003"""
+        return self._traced_chat
+
+    async def close(self) -> None:
+        """Flush events, end session, close transport. Idempotent.  # Implements FRD-SDK-002"""
+        if self._closed:
+            return
+        self._closed = True
+
+        try:
+            if self._session is not None and self._session.is_active:
+                end_event = self._session.end()
+                if end_event is not None:
+                    await self._buffer_event(end_event)
+        except Exception as e:
+            logger.warning("session_end_failed", error=str(e))
+
+        try:
+            await self._transport.flush()
+        except Exception as e:
+            logger.warning("close_flush_failed", error=str(e))
+
+        try:
+            await self._transport.close()
+        except Exception as e:
+            logger.debug("transport_close_failed", error=str(e))
+
+    async def __aenter__(self) -> AsyncOpenAITracedClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+    def __getattr__(self, name: str) -> Any:
+        """Pass-through to the underlying OpenAI client.  # Implements FRD-SDK-002"""
+        return getattr(self._client, name)
+
+
+class AsyncTracedCompletions(TracedCompletions):
+    """
+    Async proxy around client.chat.completions with tracing and enforcement.
+
+    Subclasses the sync TracedCompletions to reuse all of its pure logic
+    (cost computation, token extraction, tool parsing, prevention stack, loop
+    state, data builders, chunk accumulation) and overrides only the awaitable
+    I/O paths — create(), the streaming wrapper, event emission, policy
+    evaluation, and auto-flush.
+    """
+
+    async def create(self, **kwargs: Any) -> Any:
+        """
+        Traced async chat.completions.create().  # Implements FRD-SDK-002
+
+        Same contract as the sync create(): pre-call input policy + execution
+        controls, then buffered or streamed handling, ERROR + re-raise on failure.
+        """
+        session = await self._get_session()
+
+        try:
+            await self._evaluate_llm_policy(session, kwargs)
+        except PolicyViolationError:
+            await self._auto_flush(session)
+            raise
+
+        try:
+            self._check_prevention_stack(session, kwargs)  # pure — inherited
+        except ExecutionControlError as e:
+            await self._emit_error_event(session, e, kwargs, 0)
+            await self._auto_flush(session)
+            raise
+        except Exception:
+            logger.warning("clyro_prevention_stack_failed", fail_open=True)
+
+        if kwargs.get("stream"):
+            return await self._create_streaming(session, kwargs)  # Implements FRD-SDK-006
+
+        start_time = time.perf_counter()
+        try:
+            response = await self._original_completions.create(**kwargs)
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            await self._emit_error_event(session, e, kwargs, duration_ms)
+            await self._auto_flush(session)
+            raise  # FRD-SDK-002: re-raise the original exception unchanged
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        await self._handle_response(session, response, kwargs, duration_ms)
+        return response
+
+    # -- policy + auto-flush (async overrides) ---------------------------
+
+    async def _evaluate_llm_policy(self, session: Session, kwargs: dict[str, Any]) -> None:
+        """Evaluate input (llm_call) policy before the API call (async)."""
+        params: dict[str, Any] = {
+            "model": kwargs.get("model", ""),
+            "cost": float(session.cumulative_cost),
+            "step_number": session.step_number,
+        }
+        user_input = self._extract_last_user_message(kwargs)  # pure — inherited
+        if user_input is not None:
+            params["input"] = user_input
+        try:
+            await session.check_policy_async(
+                "llm_call", params, cumulative_cost=session.cumulative_cost
+            )
+        except PolicyViolationError:
+            raise
+        except Exception as e:
+            if self._config.fail_open:
+                logger.warning("llm_policy_evaluation_failed", error=str(e), fail_open=True)
+            else:
+                raise PolicyViolationError(
+                    rule_id="policy_unavailable",
+                    rule_name="Policy Unavailable",
+                    message=f"Policy evaluation failed: {e}",
+                    action_type="llm_call",
+                ) from e
+
+    async def _auto_flush(self, session: Session) -> None:
+        """End the session and flush buffered events eagerly (async)."""
+        try:
+            if session.is_active:
+                end_event = session.end()
+                if end_event is not None:
+                    await self._buffer_event(end_event)
+        except Exception as e:
+            logger.warning("auto_flush_session_end_failed", error=str(e), fail_open=True)
+        try:
+            await self._transport.flush()
+        except Exception as e:
+            logger.warning("auto_flush_failed", error=str(e), fail_open=True)
+
+    # -- buffered response handling (async) ------------------------------
+
+    async def _handle_response(
+        self, session: Session, response: Any, kwargs: dict[str, Any], duration_ms: int
+    ) -> None:
+        llm_event_id = None
+        try:
+            input_tokens, output_tokens, cached = self._extract_tokens(response)  # pure
+            model = kwargs.get("model") or _get(response, "model") or ""
+            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            output_data = self._build_output_data(response) if self._config.capture_outputs else None
+            llm_event_id = await self._emit_llm_call(
+                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=False
+            )
+        except Exception:
+            logger.warning("clyro_process_response_failed", fail_open=True)
+
+        # Tool calls: emit ALL events first, then evaluate policy.  # Implements FRD-SDK-003, FRD-SDK-004
+        try:
+            tools = [self._parse_tool_call(tc) for tc in self._extract_tool_calls(response)]
+            for name, arguments, tool_id in tools:
+                await self._emit_tool_call(session, name, arguments, tool_id, llm_event_id)
+            for name, arguments, _ in tools:
+                await self._evaluate_tool_policy(session, name, arguments, llm_event_id)
+        except PolicyViolationError:
+            await self._auto_flush(session)
+            raise
+        except Exception:
+            logger.warning("clyro_process_tool_calls_failed", fail_open=True)
+
+        if self._first_finish_reason(response) != "tool_calls":
+            await self._auto_flush(session)
+
+    # -- streamed response handling (async, FRD-SDK-006) ----------------
+
+    async def _create_streaming(self, session: Session, kwargs: dict[str, Any]) -> Any:
+        injected_usage = False
+        if "stream_options" not in kwargs and self._inject_stream_usage:
+            kwargs = {**kwargs, "stream_options": {"include_usage": True}}
+            injected_usage = True
+
+        start_time = time.perf_counter()
+        try:
+            stream = await self._original_completions.create(**kwargs)
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            await self._emit_error_event(session, e, kwargs, duration_ms)
+            raise
+        return self._wrap_stream(session, stream, kwargs, start_time, injected_usage)
+
+    async def _wrap_stream(
+        self, session: Session, stream: Any, kwargs: dict[str, Any], start_time: float, injected_usage: bool
+    ) -> Any:
+        """Async-generator: yield chunks, accumulate, emit on completion (FRD-SDK-006)."""
+        model = kwargs.get("model") or ""
+        usage: Any = None
+        finish_reason: str | None = None
+        content_parts: list[str] = []
+        tool_acc: dict[int, dict[str, Any]] = {}
+        try:
+            async for chunk in stream:
+                skip_yield = False
+                try:
+                    chunk_usage = _get(chunk, "usage")
+                    if chunk_usage is not None:
+                        usage = chunk_usage
+                    chunk_model = _get(chunk, "model")
+                    if chunk_model:
+                        model = chunk_model
+                    chunk_finish = self._first_finish_reason(chunk)
+                    if chunk_finish is not None:
+                        finish_reason = chunk_finish
+                    self._accumulate_chunk(chunk, content_parts, tool_acc)  # pure
+                    # Transparency: swallow the trailing usage-only chunk we induced.
+                    if injected_usage and chunk_usage is not None and not _get(chunk, "choices"):
+                        skip_yield = True
+                except Exception:
+                    logger.warning("clyro_stream_accumulate_failed", fail_open=True)
+                if not skip_yield:
+                    yield chunk
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            await self._emit_error_event(session, e, kwargs, duration_ms)
+            await self._auto_flush(session)
+            raise
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        await self._finalize_stream(session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms)
+
+    async def _finalize_stream(
+        self,
+        session: Session,
+        model: str,
+        usage: Any,
+        finish_reason: str | None,
+        content_parts: list[str],
+        tool_acc: dict[int, dict[str, Any]],
+        kwargs: dict[str, Any],
+        duration_ms: int,
+    ) -> None:
+        llm_event_id = None
+        try:
+            text = "".join(content_parts)
+            cached = 0
+            estimated = False
+            if usage is not None:
+                token_usage = self._token_extractor.extract({"usage": usage, "model": model})
+                input_tokens = token_usage.input_tokens if token_usage else 0
+                output_tokens = token_usage.output_tokens if token_usage else 0
+                cached = _extract_cached_tokens(usage)
+            else:
+                # FRD-SDK-006: usage absent -> estimate, never zero, flag estimated (VR-S3)
+                estimated = True
+                input_tokens = self._estimate_input_tokens(kwargs)
+                output_tokens = max(1, len(text) // 4)
+
+            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            output_data = {"content": text} if self._config.capture_outputs else None
+            llm_event_id = await self._emit_llm_call(
+                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=estimated
+            )
+        except Exception:
+            logger.warning("clyro_stream_finalize_failed", fail_open=True)
+
+        try:
+            tools = [
+                (tool_acc[i]["name"], self._parse_arguments(tool_acc[i]["args"]), tool_acc[i]["id"])
+                for i in sorted(tool_acc)
+            ]
+            for name, arguments, tool_id in tools:
+                await self._emit_tool_call(session, name, arguments, tool_id, llm_event_id)
+            for name, arguments, _ in tools:
+                await self._evaluate_tool_policy(session, name, arguments, llm_event_id)
+        except PolicyViolationError:
+            await self._auto_flush(session)
+            raise
+        except Exception:
+            logger.warning("clyro_stream_tool_processing_failed", fail_open=True)
+
+        if finish_reason != "tool_calls":
+            await self._auto_flush(session)
+
+    # -- event emission (async) ------------------------------------------
+
+    async def _emit_llm_call(
+        self,
+        session: Session,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        duration_ms: int,
+        input_data: dict[str, Any] | None,
+        output_data: dict[str, Any] | None,
+        *,
+        estimated: bool,
+    ) -> UUID:
+        """Compute cost, emit an LLM_CALL event, return its id (async).  # Implements FRD-SDK-002, FRD-SDK-005"""
+        cost_usd = self._compute_cost(input_tokens, output_tokens, cached_tokens, model)  # pure
+        session._cumulative_cost += cost_usd
+        event_id = uuid4()
+        metadata: dict[str, Any] = {"model": model}
+        if cached_tokens:
+            metadata["cached_tokens"] = cached_tokens
+        if estimated:
+            metadata["estimated"] = True  # VR-S3
+        event = create_llm_call_event(
+            session_id=session.session_id,
+            step_number=session.step_number,
+            model=model,
+            input_data=input_data or {"model": model},
+            output_data=output_data,
+            agent_id=self._agent_id,
+            token_count_input=input_tokens,
+            token_count_output=output_tokens,
+            cost_usd=cost_usd,
+            cumulative_cost=session.cumulative_cost,
+            duration_ms=duration_ms,
+            agent_stage=AgentStage.THINK,
+            framework=self._framework,
+            framework_version=self._framework_version,
+            event_id=event_id,
+            parent_event_id=self._last_llm_event_id,
+            metadata=metadata,
+        )
+        if event is not None:
+            session._events.append(event)
+            await self._buffer_event(event)
+        self._last_llm_event_id = event_id
+        return event_id
+
+    async def _emit_tool_call(
+        self,
+        session: Session,
+        tool_name: str | None,
+        arguments: Any,
+        tool_id: str | None,
+        llm_event_id: UUID | None,
+    ) -> None:
+        """Emit one TOOL_CALL event (async; no policy — see _evaluate_tool_policy).  # Implements FRD-SDK-003"""
+        input_data = arguments if isinstance(arguments, dict) else {"arguments": arguments}
+        event = create_tool_call_event(
+            session_id=session.session_id,
+            step_number=session.step_number,
+            tool_name=tool_name or "unknown",
+            input_data=input_data,
+            agent_id=self._agent_id,
+            agent_stage=AgentStage.ACT,
+            framework=self._framework,
+            framework_version=self._framework_version,
+            parent_event_id=llm_event_id,  # VR-S2: link to parent LLM_CALL
+            cumulative_cost=session.cumulative_cost,
+            metadata={"tool_call_id": tool_id} if tool_id else {},
+        )
+        if event is not None:
+            session._events.append(event)
+            await self._buffer_event(event)
+
+    async def _evaluate_tool_policy(
+        self, session: Session, tool_name: str | None, arguments: Any, llm_event_id: UUID | None
+    ) -> None:
+        """Evaluate the Prevention Stack on a tool call before returning (async).  # Implements FRD-SDK-004"""
+        parameters: dict[str, Any] = {"tool_name": tool_name or "unknown"}
+        if isinstance(arguments, dict):
+            parameters.update(arguments)
+        try:
+            await session.check_policy_async(
+                "tool_call",
+                parameters,
+                parent_event_id=llm_event_id,
+                cumulative_cost=session.cumulative_cost,
+            )
+        except PolicyViolationError:
+            raise
+        except Exception as e:
+            if self._config.fail_open:
+                logger.warning("policy_evaluation_failed", error=str(e), tool_name=tool_name, fail_open=True)
+            else:
+                raise PolicyViolationError(
+                    rule_id="policy_unavailable",
+                    rule_name="Policy Unavailable",
+                    message=f"Policy evaluation failed: {e}",
+                    action_type="tool_call",
+                ) from e
+
+    async def _emit_error_event(
+        self, session: Session, error: Exception, kwargs: dict[str, Any], duration_ms: int
+    ) -> None:
+        """Emit an ERROR trace event for a failed API call (async).  # Implements FRD-SDK-002"""
+        try:
+            model = kwargs.get("model", "")
+            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else None
+            event = create_error_event(
+                session_id=session.session_id,
+                step_number=session.step_number,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                agent_id=self._agent_id,
+                error_stack=traceback.format_exc(),
+                framework=self._framework,
+                framework_version=self._framework_version,
+                parent_event_id=self._last_llm_event_id,
+                cumulative_cost=session.cumulative_cost,
+                input_data=input_data,
+                output_data={"error_type": type(error).__name__, "error_message": str(error)},
+                metadata={"model": model, "duration_ms": duration_ms},
+            )
+            if event is not None:
+                session._events.append(event)
+                await self._buffer_event(event)
+        except Exception as emit_err:
+            logger.warning("error_event_emission_failed", error=str(emit_err))
