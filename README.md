@@ -11,7 +11,8 @@ One `pip install`, three tools:
 
 | Component | What it does | CLI |
 |-----------|-------------|-----|
-| **SDK** | Wrap any Python agent with tracing, cost limits, loop detection, and policy enforcement | `clyro-sdk` |
+| **SDK** | Wrap any Python agent with tracing, cost limits, loop detection, and policy enforcement | `clyro` / `clyro-sdk` |
+| **Policy Recommender** | Point it at an existing agent → recommends the agent type, concerns, and kits to govern | `clyro suggest` |
 | **MCP Wrapper** | Govern MCP tool calls in Claude Desktop, Cursor, and VS Code | `clyro-mcp` |
 | **Claude Code Hooks** | Block destructive commands (rm -rf, DROP TABLE) in Claude Code sessions | `clyro-hook` |
 
@@ -27,6 +28,7 @@ The SDK is the integration layer: add `clyro.wrap()` to any Python agent and you
 
 - **Works offline**: Local mode with YAML policies — no cloud dependency
 - **5 framework adapters**: LangGraph, CrewAI, Claude Agent SDK, Anthropic SDK, Generic
+- **Policy recommender** (`clyro suggest`): point it at an existing agent → it recommends the agent type, concerns, and kits to govern
 - **Prevention Stack**: Step limits, cost limits, loop detection, business logic guardrails
 - **Policy enforcement**: 8 operators, block/allow/require_approval, per-rule fail-open
 - **Cost tracking**: Automatic LLM cost calculation for OpenAI and Anthropic models
@@ -101,6 +103,25 @@ clyro-mcp wrap --config mcp_governance.yaml -- npx @modelcontextprotocol/server-
   }
 }
 ```
+
+### 4. Policy Recommender — what should I govern?
+
+Point Clyro at an agent you've already built and it recommends the agent type,
+the concerns worth tracking, and the kits to apply — reading its tools, prompt,
+and structure (it never runs the agent). Runs locally, no account needed.
+
+```bash
+clyro suggest myapp.agents:support_agent
+```
+```
+Detected agent type: agent_type.transactional
+Inferred concerns:
+  • concern.pii-protection   [high]   — Tool argument `email` is PII.
+  • concern.reversibility    [high]   — Tool `refund_customer` performs an irreversible action.
+```
+
+`--json` for the machine-readable payload, `--llm-transport rule-based` for a
+deterministic offline run. Full guide: [docs/sdk/policy-recommender.md](docs/sdk/policy-recommender.md).
 
 ### Local YAML Policies
 
@@ -462,6 +483,7 @@ except ClyroError as e:
 
 | Guide | Description |
 |-------|-------------|
+| [Policy Recommender](docs/sdk/policy-recommender.md) | `clyro suggest` — recommend the agent type, concerns, and kits to govern |
 | [LangGraph](docs/sdk/langgraph.md) | Wrap LangGraph agents with governance |
 | [CrewAI](docs/sdk/crewai.md) | Wrap CrewAI agents with governance |
 | [Claude Agent SDK](docs/sdk/claude_agent_sdk.md) | Wrap Claude Agent SDK with governance |
@@ -501,6 +523,7 @@ ruff format clyro/
 ```
 clyro/
 ├── adapters/           # Framework adapters (LangGraph, CrewAI, Anthropic, Claude Agent SDK)
+├── recommender/        # Policy recommender (`clyro suggest`): introspection, mappers, transports
 ├── mcp/                # MCP governance wrapper (JSON-RPC proxy, YAML policies)
 ├── hooks/              # Claude Code hooks (PreToolUse/PostToolUse governance)
 ├── backend/            # Cloud backend communication (HTTP client, sync, circuit breaker)
@@ -510,7 +533,7 @@ clyro/
 ├── wrapper.py          # Core wrap() function
 ├── local_policy.py     # Local YAML policy evaluator
 ├── local_logger.py     # Terminal logger for local mode
-├── cli.py              # CLI (clyro-sdk feedback, help)
+├── cli.py              # CLI (clyro / clyro-sdk: suggest, feedback, status, help)
 ├── exceptions.py       # Exception hierarchy
 ├── cost.py             # LLM cost calculation
 └── redaction.py        # PII/secret redaction

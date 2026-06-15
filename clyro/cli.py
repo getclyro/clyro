@@ -414,6 +414,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Show mode, usage, adapter, policies, and session history",
     )
 
+    # suggest subcommand (policy-recommender FRD-PR-FE-001..005)
+    from clyro.recommender.cli import add_suggest_parser
+
+    add_suggest_parser(subparsers)
+
     args = parser.parse_args(argv)
 
     # Bare ``clyro-sdk`` command → print help (TDD §4.2)
@@ -426,6 +431,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "status":
         sys.exit(_handle_status(args))
+
+    if args.command == "suggest":
+        from clyro.recommender.cli import handle_suggest
+
+        sys.exit(handle_suggest(args))
 
 
 if __name__ == "__main__":

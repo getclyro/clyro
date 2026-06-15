@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**`clyro suggest` — the Policy Recommender.** Point Clyro at an agent you've
+already built and it recommends what to govern — the agent's `agent_type`, the
+`concerns` worth tracking, and the `kits` to apply, each with a rationale and
+confidence. It introspects the wrapped agent (tools, system prompt, topology,
+model) without running it, maps it to the catalogue with deterministic rules,
+and optionally refines the result with an LLM (schema-gated to the catalogue, so
+it can never invent an id). Runs locally with no Clyro account.
+
+- New `clyro suggest <import-path>` command (the SDK now also installs a `clyro`
+  console-script alongside `clyro-sdk`).
+- Static introspection across all four frameworks (LangGraph, CrewAI, Anthropic
+  SDK, Claude Agent SDK) with graceful degradation — never raises on an
+  unrecognised agent.
+- LLM transports: `auto` (Claude Code CLI → Anthropic API key → rule-based),
+  plus explicit `claude-code` / `anthropic-api` / `rule-based`.
+- Flags: `--llm-transport`, `--json`, `--out`, `--apply`, `--no-cache`,
+  `--debug`. Results are cached by an agent fingerprint at
+  `~/.clyro/proposer-cache.db`.
+- New `policy_recommender` config block on `ClyroConfig`
+  (`llm_transport`, `cache_ttl_days`, `dashboard_base_url`, …).
+
+See [`docs/sdk/policy-recommender.md`](docs/sdk/policy-recommender.md).
+
 ### ⚠️ Breaking Changes
 
 **Policy operator semantics flipped to trigger-on-match.** Operators previously
