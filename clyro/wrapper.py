@@ -30,6 +30,7 @@ from clyro.adapters.claude_agent_sdk import ClaudeAgentAdapter
 from clyro.adapters.crewai import CrewAIAdapter
 from clyro.adapters.generic import GenericAdapter, detect_adapter
 from clyro.adapters.langgraph import LangGraphAdapter
+from clyro.adapters.openai import OpenAIAdapter
 from clyro.config import ClyroConfig, get_config, set_config
 from clyro.exceptions import (
     ClyroWrapError,
@@ -1466,9 +1467,9 @@ def wrap(
         )
 
     if agent is not None:
-        # Anthropic SDK adapter: non-callable client returns traced client  # Implements FRD-001, FRD-002
+        # SDK client adapters: non-callable client returns a traced client  # Implements FRD-001, FRD-002, FRD-SDK-001, FRD-SDK-002
         resolved_adapter = adapter or detect_adapter(agent)
-        if resolved_adapter == "anthropic":
+        if resolved_adapter in ("anthropic", "openai"):
             resolved_config = config or get_config()
 
             # Resolve org_id
@@ -1518,7 +1519,8 @@ def wrap(
                         agent_type=type(agent).__name__,
                     )
 
-            anthropic_adapter = AnthropicAdapter(
+            adapter_cls = AnthropicAdapter if resolved_adapter == "anthropic" else OpenAIAdapter
+            sdk_adapter = adapter_cls(
                 client=agent,
                 config=resolved_config,
                 agent_id=resolved_agent_id,
@@ -1527,7 +1529,7 @@ def wrap(
                 if approval_handler is not _APPROVAL_HANDLER_NOT_SET
                 else None,
             )
-            return anthropic_adapter.create_traced_client()
+            return sdk_adapter.create_traced_client()
 
         return decorator(agent)
 

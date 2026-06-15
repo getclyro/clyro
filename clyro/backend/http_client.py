@@ -179,6 +179,20 @@ class HttpSyncClient:
         )
         return response.json()
 
+    async def fetch_pricing(self) -> dict[str, Any]:
+        """
+        Fetch the backend pricing catalog (C6 — GET /v1/pricing).
+
+        Returns:
+            Response payload: ``{"records": [...], "generated_at": ...}``.
+        """
+        response = await self._request_with_retry(
+            "GET",
+            "/v1/pricing",
+            handle_429=False,
+        )
+        return response.json()
+
     async def report_violations(self, violations: list[dict[str, Any]]) -> dict[str, Any]:
         """
         Report policy violations to backend (FRD-006).

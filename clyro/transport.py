@@ -170,6 +170,7 @@ class Transport:
         self._running = False
         self._event_buffer: list[TraceEvent] = []
         self._buffer_lock: asyncio.Lock | None = None
+        self._pricing_task: asyncio.Task | None = None  # retained so it isn't GC'd mid-flight
 
         # Create event sender for SyncWorker
         self._sender = HttpEventSender(config, self._get_client)
@@ -415,12 +416,33 @@ class Transport:
         if self._otlp_exporter is not None:
             await self._otlp_exporter.start()
 
+        # Pull the C6 pricing catalog once — shared infra so every adapter prices
+        # from the live backend catalog. Retain the task so it isn't GC'd mid-flight;
+        # fail-open.
+        try:
+            self._pricing_task = asyncio.create_task(self._refresh_pricing_catalog())
+        except RuntimeError:
+            pass  # no running loop — skip (defensive)
+
         logger.debug("background_sync_started")
+
+    async def _refresh_pricing_catalog(self) -> None:
+        """One-shot pull of the C6 pricing catalog (provider-agnostic). Fail-open."""
+        try:
+            from clyro.pricing_catalog import refresh_pricing_catalog_from_config
+
+            await refresh_pricing_catalog_from_config(self.config)
+        except Exception as e:
+            logger.warning("pricing_catalog_refresh_failed", error=str(e), fail_open=True)
 
     async def stop_background_sync(self) -> None:
         """Stop background sync."""
         self._running = False
         await self._sync_worker.stop()
+
+        # Cancel the one-shot pricing pull if it's still in flight.
+        if self._pricing_task is not None and not self._pricing_task.done():
+            self._pricing_task.cancel()
 
         # Final flush of memory buffer
         await self._flush_buffer()

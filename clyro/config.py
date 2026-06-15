@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 import structlog
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 from clyro.constants import DEFAULT_API_URL
 from clyro.exceptions import ClyroConfigError
@@ -280,6 +280,10 @@ class ClyroConfig(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    # User-set prices (register_model_pricing or an explicit ``pricing=``) — the
+    # "custom" tier that wins over the backend catalog in get_model_pricing.
+    _custom_pricing: dict[str, dict[str, float]] = PrivateAttr(default_factory=dict)
+
     def __init__(self, **data: Any) -> None:
         try:
             super().__init__(**data)
@@ -288,6 +292,10 @@ class ClyroConfig(BaseModel):
                 message="Invalid configuration",
                 details={"errors": exc.errors()},
             ) from exc
+        # Pricing the caller passed explicitly is a custom override (beats catalog).
+        passed = data.get("pricing")
+        if isinstance(passed, dict):
+            self._custom_pricing = {k: dict(v) for k, v in passed.items()}
 
     # Implements FRD-SOF-004: mode validation
     @field_validator("mode")
@@ -415,7 +423,13 @@ class ClyroConfig(BaseModel):
 
     def get_model_pricing(self, model: str) -> tuple[Decimal, Decimal]:
         """
-        Get pricing for a model.
+        Get pricing for a model by precedence: custom > catalog > static > default.  # Implements C6
+
+        - **custom**: prices the user set (``register_model_pricing`` or ``pricing=``).
+        - **catalog**: the backend pricing catalog pulled via C6 (``GET /v1/pricing``),
+          when loaded — replaces the SDK's stale bundled table with live prices.
+        - **static**: the SDK's bundled ``DEFAULT_PRICING`` table.
+        - **default**: a conservative flat fallback (0.01 / 0.03 per 1K).
 
         Args:
             model: Model name/identifier
@@ -423,18 +437,39 @@ class ClyroConfig(BaseModel):
         Returns:
             Tuple of (input_price_per_1k, output_price_per_1k)
         """
-        # Try exact match first
-        if model in self.pricing:
-            p = self.pricing[model]
-            return Decimal(str(p["input"])), Decimal(str(p["output"]))
+        # 1. Custom — user-set pricing wins over everything (incl. the catalog).
+        custom = self._match_pricing(self._custom_pricing, model)
+        if custom is not None:
+            return custom
 
-        # Try partial match (e.g., "gpt-4-turbo-preview" matches "gpt-4-turbo")
-        for known_model, pricing in self.pricing.items():
-            if model.startswith(known_model) or known_model in model:
-                return Decimal(str(pricing["input"])), Decimal(str(pricing["output"]))
+        # 2. Catalog — live backend prices (C6). Lazy import avoids a circular dep;
+        #    returns None when not loaded (offline / local mode) -> fall through.
+        from clyro.pricing_catalog import pricing_catalog_cache
 
-        # Default fallback pricing (conservative estimate)
+        catalog = pricing_catalog_cache.get(model)
+        if catalog is not None:
+            return catalog
+
+        # 3. Static — the SDK's bundled table.
+        static = self._match_pricing(self.pricing, model)
+        if static is not None:
+            return static
+
+        # 4. Default fallback (conservative estimate).
         return Decimal("0.01"), Decimal("0.03")
+
+    @staticmethod
+    def _match_pricing(
+        table: dict[str, dict[str, float]], model: str
+    ) -> tuple[Decimal, Decimal] | None:
+        """Look up a model in a pricing table by exact then partial match, or None."""
+        if model in table:
+            p = table[model]
+            return Decimal(str(p["input"])), Decimal(str(p["output"]))
+        for known_model, p in table.items():
+            if model.startswith(known_model) or known_model in model:
+                return Decimal(str(p["input"])), Decimal(str(p["output"]))
+        return None
 
     def register_model_pricing(
         self,
@@ -458,10 +493,12 @@ class ClyroConfig(BaseModel):
             config.register_model_pricing("custom-model", 0.02, 0.06)
             ```
         """
-        self.pricing[model] = {
+        entry = {
             "input": input_price_per_1k,
             "output": output_price_per_1k,
         }
+        self.pricing[model] = entry  # kept for backward compat (callers read .pricing)
+        self._custom_pricing[model] = entry  # custom tier — wins over the catalog
         logger.debug(
             "model_pricing_registered",
             model=model,
