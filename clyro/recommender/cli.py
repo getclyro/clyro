@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.request
 from typing import Any
 
 from clyro.recommender.recommender import Recommender, SuggestResult
@@ -62,6 +63,28 @@ def add_suggest_parser(subparsers: argparse._SubParsersAction) -> None:
         "-y", "--yes", action="store_true", help="Skip the --apply confirmation prompt (CI)."
     )
     p.add_argument("--no-cache", action="store_true", help="Bypass the fingerprint cache.")
+    p.add_argument(
+        "--prefill",
+        action="store_true",
+        help="POST the recommendation to the backend and print a one-time "
+        "wizard deep-link (?prefill=<token>). Requires a configured api_key.",
+    )
+    p.add_argument(
+        "--agent-name",
+        metavar="NAME",
+        default=None,
+        help="Re-recommend an EXISTING agent: derive its agent_id as "
+        "uuid5(org_id, name) and tag the prefill with it. Use the same name you "
+        "govern the agent under (config.agent_name / clyro.wrap). Omit for a "
+        "new agent — a plain --prefill carries no agent_id.",
+    )
+    p.add_argument(
+        "--agent-id",
+        metavar="UUID",
+        default=None,
+        help="Re-recommend an EXISTING agent by its exact agent_id (overrides "
+        "--agent-name). Omit for a new agent.",
+    )
     p.add_argument(
         "--debug",
         action="store_true",
@@ -153,13 +176,17 @@ def handle_suggest(args: argparse.Namespace) -> int:
         print(f"Could not import '{args.agent}': {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
-    config = ClyroConfig()
+    # from_env() so CLYRO_API_KEY / CLYRO_ENDPOINT / CLYRO_MODE are honoured
+    # (ClyroConfig() alone is a plain BaseModel and ignores the environment).
+    config = ClyroConfig.from_env()
     rec_cfg = config.policy_recommender
     transport = args.llm_transport or rec_cfg.llm_transport
     deployment_mode = "cloud" if config.mode == "cloud" else "self-hosted"
 
     try:
-        result = Recommender(base_url=rec_cfg.dashboard_base_url).suggest(
+        # Catalogue (/v1/agent-types, /concerns, /kits) lives on the API, not the
+        # dashboard — use config.endpoint, the same host the prefill POST targets.
+        result = Recommender(base_url=config.endpoint).suggest(
             agent,
             llm_transport=transport,
             api_key=config.api_key,
@@ -178,7 +205,7 @@ def handle_suggest(args: argparse.Namespace) -> int:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         # Catalogue fetch failed and no local snapshot is cached (first run, offline).
         print(
-            f"Error: could not reach the catalogue at {rec_cfg.dashboard_base_url} "
+            f"Error: could not reach the catalogue at {config.endpoint} "
             f"({type(exc).__name__}). Connect once to cache the catalogue, then "
             "offline re-runs will work.",
             file=sys.stderr,
@@ -204,15 +231,123 @@ def handle_suggest(args: argparse.Namespace) -> int:
         print(_render_human(result))
         if args.out:
             print(f"\nWrote recommendation to {args.out}", file=sys.stderr)
-        link = f"{rec_cfg.dashboard_base_url}/agents/new"
-        print(
-            f"\nOpen in wizard: {link} (use --json --out <file> to save the payload).",
-            file=sys.stderr,
-        )
+
+    # Wizard deep-link — a real ?prefill=<token> when --prefill (and an api_key)
+    # allow; otherwise the plain link. Printed to stderr so --json stdout stays clean.
+    want_prefill = getattr(args, "prefill", False)
+    # agent_id is attached ONLY for the re-recommend flow (an existing agent the
+    # caller identifies via --agent-id or --agent-name). A plain --prefill is the
+    # new-agent flow: it carries no agent_id — the wizard creates the agent.
+    link, prefilled = _wizard_link(
+        payload_dict,
+        config,
+        rec_cfg,
+        want_prefill=want_prefill,
+        agent_name=getattr(args, "agent_name", None),
+        agent_id=getattr(args, "agent_id", None),
+    )
+    if prefilled:
+        print(f"\nPre-fill token created. Open in wizard:\n  {link}", file=sys.stderr)
+    else:
+        print(f"\nOpen in wizard: {link}", file=sys.stderr)
+        if not want_prefill:
+            print(
+                "  (add --prefill to create a one-time token, or --json/--out to save the payload)",
+                file=sys.stderr,
+            )
 
     if args.apply:
         return _handle_apply()
     return 0
+
+
+class _PrefillError(Exception):
+    """A non-fatal reason the prefill POST could not be made (reported, not raised)."""
+
+
+def _create_prefill_token(
+    payload: dict[str, Any],
+    config: Any,
+    agent_name: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """POST ``payload`` to ``/agent-setup/prefill`` and return the token.
+
+    Resolves ``org_id`` from the configured api_key (no extra round-trip). For the
+    re-recommend flow it tags the payload with a target ``agent_id`` — taken
+    directly from ``agent_id`` when given, else derived as ``uuid5(org_id,
+    agent_name)``. A new-agent prefill passes neither and sends no ``agent_id``.
+    Raises ``_PrefillError`` with a user-readable reason on any failure.
+    """
+    from clyro.wrapper import _extract_org_id_from_jwt_api_key, _generate_agent_id_from_name
+
+    if not config.api_key:
+        raise _PrefillError("no api_key configured (set CLYRO_API_KEY or config.api_key)")
+    org_id = _extract_org_id_from_jwt_api_key(config.api_key)
+    if org_id is None:
+        raise _PrefillError("could not resolve org_id from the api_key (local key?)")
+
+    # Re-recommend only: attach a target agent_id when the caller identifies an
+    # existing agent. Explicit --agent-id wins; otherwise derive from --agent-name
+    # (matching clyro.wrap() auto-registration). A plain prefill sends no agent_id
+    # and the wizard creates a brand-new agent.
+    if not payload.get("agent_id"):
+        if agent_id:
+            payload = {**payload, "agent_id": str(agent_id)}
+        elif agent_name:
+            payload = {**payload, "agent_id": str(_generate_agent_id_from_name(agent_name, org_id))}
+
+    from clyro import __version__
+
+    url = f"{config.endpoint.rstrip('/')}/v1/organizations/{org_id}/agent-setup/prefill"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Clyro-API-Key": config.api_key,
+            # Identify the client. urllib's default "Python-urllib/x" UA is
+            # banned by Cloudflare's default bot rules (403, error code 1010).
+            "User-Agent": f"clyro-sdk/{__version__}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (configured endpoint)
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")[:300]
+        except Exception:
+            detail = ""
+        raise _PrefillError(f"server returned {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _PrefillError(f"could not reach {config.endpoint} ({type(exc).__name__})") from exc
+
+    token = body.get("prefill_token") if isinstance(body, dict) else None
+    if not token:
+        raise _PrefillError("response did not include a prefill_token")
+    return str(token)
+
+
+def _wizard_link(
+    payload: dict[str, Any],
+    config: Any,
+    rec_cfg: Any,
+    want_prefill: bool,
+    agent_name: str | None = None,
+    agent_id: str | None = None,
+) -> tuple[str, bool]:
+    """Return (wizard_url, prefilled). Adds ?prefill=<token> when requested + possible."""
+    base = rec_cfg.dashboard_base_url.rstrip("/")
+    if not want_prefill:
+        return f"{base}/agents/new", False
+    try:
+        token = _create_prefill_token(payload, config, agent_name=agent_name, agent_id=agent_id)
+        return f"{base}/agents/new?prefill={token}", True
+    except _PrefillError as exc:
+        print(f"(prefill skipped: {exc})", file=sys.stderr)
+        return f"{base}/agents/new", False
 
 
 def _handle_apply() -> int:

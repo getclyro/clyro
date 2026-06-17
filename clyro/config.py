@@ -164,8 +164,9 @@ class PolicyRecommenderConfig(BaseModel):
         description="Requested TTL for issued pre-fill tokens (server may clamp).",
     )
     dashboard_base_url: str = Field(
-        default="https://clyro.dev",
-        description="Base URL for catalogue fetch + wizard deep-links.",
+        default="https://app.clyro.dev",
+        description="Base URL for the dashboard wizard deep-links (the catalogue is "
+        "fetched from the API endpoint, not this).",
     )
     redact_prompt: bool = Field(
         default=False,
