@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from clyro.constants import DEFAULT_API_URL
 from clyro.recommender import mappers
 from clyro.recommender.cache import FingerprintCache
 from clyro.recommender.catalogue_client import CatalogueClient
@@ -41,7 +42,7 @@ class Recommender:
 
     def __init__(
         self,
-        base_url: str = "https://clyro.dev",
+        base_url: str = DEFAULT_API_URL,
         cache: FingerprintCache | None = None,
         introspector: AgentIntrospector | None = None,
     ):

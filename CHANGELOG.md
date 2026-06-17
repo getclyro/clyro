@@ -24,9 +24,17 @@ it can never invent an id). Runs locally with no Clyro account.
   unrecognised agent.
 - LLM transports: `auto` (Claude Code CLI → Anthropic API key → rule-based),
   plus explicit `claude-code` / `anthropic-api` / `rule-based`.
-- Flags: `--llm-transport`, `--json`, `--out`, `--apply`, `--no-cache`,
-  `--debug`. Results are cached by an agent fingerprint at
-  `~/.clyro/proposer-cache.db`.
+- Flags: `--llm-transport`, `--json`, `--out`, `--prefill` (POST the
+  recommendation and get a one-time `?prefill=<token>` wizard link),
+  `--agent-name`, `--agent-id`, `--apply`, `--no-cache`, `--debug`. Results are
+  cached by an agent fingerprint at `~/.clyro/proposer-cache.db`.
+- A plain `--prefill` is the **new-agent** flow — it sends no `agent_id` (the
+  wizard creates the agent). To **re-recommend an existing agent**, identify it
+  with `--agent-id <uuid>` or `--agent-name <name>` (derives
+  `uuid5(org_id, name)`, matching `clyro.wrap()` registration); the prefill is
+  then tagged with that `agent_id`.
+- `--prefill` sets a `clyro-sdk/<version>` `User-Agent`; the catalogue is fetched
+  from the API endpoint and wizard deep-links default to `https://app.clyro.dev`.
 - New `policy_recommender` config block on `ClyroConfig`
   (`llm_transport`, `cache_ttl_days`, `dashboard_base_url`, …).
 
