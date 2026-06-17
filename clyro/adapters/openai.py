@@ -39,6 +39,7 @@ at module level — only the installed version is inspected when validating.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import json
 import time
@@ -400,7 +401,6 @@ class OpenAITracedClient:
         self._framework_version = framework_version
         self._session: Session | None = None
         self._closed = False
-        self._background_sync_started = False
 
         traced_completions = TracedCompletions(
             original_completions=client.chat.completions,
@@ -417,17 +417,59 @@ class OpenAITracedClient:
         )
         self._traced_chat = _TracedChat(client.chat, traced_completions)
 
+        # Pin ONE event loop for this client's whole lifetime.
+        #
+        # SyncTransport._get_loop() creates a BRAND-NEW event loop on every call
+        # (asyncio.get_running_loop() always raises at sync top-level, so it never
+        # reuses a stopped loop despite its docstring). But the async Transport's
+        # httpx client and asyncio locks are loop-affine: they bind to the first
+        # loop, so the next buffer/flush op runs on a different loop and raises
+        # "<...> is bound to a different event loop". In cloud mode that error is
+        # swallowed fail-open and the events are dropped — so traces never reach the
+        # backend and no agent appears. Pinning one loop keeps buffer/flush/send/close
+        # on the same loop -> reliable, immediate delivery via _auto_flush().
+        self._owned_loop: asyncio.AbstractEventLoop | None = None
+        if isinstance(transport, SyncTransport):
+            self._owned_loop = asyncio.new_event_loop()
+            transport._loop = self._owned_loop
+            transport._get_loop = self._pinned_loop
+
+        # Background sync — same as every other adapter (Anthropic / LangGraph / CrewAI /
+        # Generic): in cloud mode start the periodic SyncWorker + one-shot pricing-catalog
+        # pull. It runs on its own thread/loop (independent of the pinned loop above), so
+        # the worker's periodic sends are a best-effort BACKUP; the pinned-loop _auto_flush()
+        # is what actually delivers each turn. This restores parity (the sync_worker_started
+        # log + pricing fetch) without reintroducing the dual-loop delivery failure.
+        self._background_sync_started = False
         if not config.is_local_only():
             self._start_background_sync()
         atexit.register(self.close)
 
+    def _pinned_loop(self) -> asyncio.AbstractEventLoop:
+        """Return this client's single persistent loop (replaces SyncTransport._get_loop).
+
+        Preserves the original safety check: a SyncTransport must never run inside an
+        already-running loop (that would deadlock run_until_complete).
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running.is_running():
+            raise RuntimeError(
+                "SyncTransport cannot be used inside a running event loop. "
+                "Use the async client (AsyncOpenAI) instead."
+            )
+        return self._owned_loop  # type: ignore[return-value]
+
     def _start_background_sync(self) -> None:
+        """Start the periodic SyncWorker + pricing pull (parity with the other adapters)."""
         if self._background_sync_started:
             return
         try:
             self._transport.start_background_sync()
             self._background_sync_started = True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("background_sync_start_failed", error=str(e), fail_open=True)
 
     def _ensure_session(self) -> Session:
@@ -466,7 +508,12 @@ class OpenAITracedClient:
         return self._session
 
     def _buffer_event(self, event: TraceEvent) -> None:
-        """Buffer an event to transport with fail-open behavior.  # Implements NFR-SDK-002"""
+        """Buffer an event to transport with fail-open behavior.  # Implements NFR-SDK-002
+
+        The event's framework (openai / openrouter) is sent as-is — the backend accepts
+        these values, so there's no wire relabel. Buffering the original object (not a copy)
+        lets tool-result backfill mutate the very event the transport will send.
+        """
         try:
             self._transport.buffer_event(event)
         except Exception as e:
@@ -503,6 +550,13 @@ class OpenAITracedClient:
             self._transport.close()
         except Exception as e:
             logger.debug("transport_close_failed", error=str(e))
+
+        # Close the pinned loop last (after the transport has finished using it).
+        if self._owned_loop is not None and not self._owned_loop.is_closed():
+            try:
+                self._owned_loop.close()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("owned_loop_close_failed", error=str(e))
 
     def __enter__(self) -> OpenAITracedClient:
         return self
@@ -561,6 +615,27 @@ class TracedCompletions:
         self._buffer_event = buffer_event
         self._last_llm_event_id: UUID | None = None
         self._token_extractor = OpenAITokenExtractor()
+        # TOOL_CALL events awaiting their result, keyed by tool_call_id. OpenAI returns
+        # tool results as role:"tool" messages on the NEXT create(), so we backfill
+        # them onto the event then (parity with the Anthropic adapter). FRD-SDK-003.
+        self._pending_tool_events: dict[str, TraceEvent] = {}
+
+    def _backfill_tool_results(self, kwargs: dict[str, Any]) -> None:
+        """Attach tool results to the matching earlier TOOL_CALL events.
+
+        Scans this call's input for role:"tool" messages and sets the pending
+        TOOL_CALL event's ``output_data`` by matching ``tool_call_id``. Best-effort:
+        only updates events still in-flight (the open tool-loop turn, before flush).
+        The buffered event is the same object, so this also updates what the transport sends.
+        """
+        if not self._pending_tool_events:
+            return
+        for msg in kwargs.get("messages", []) or []:
+            if not (isinstance(msg, dict) and msg.get("role") == "tool"):
+                continue
+            event = self._pending_tool_events.pop(msg.get("tool_call_id"), None)
+            if event is not None:
+                event.output_data = {"result": msg.get("content")}
 
     def create(self, **kwargs: Any) -> Any:
         """
@@ -572,6 +647,12 @@ class TracedCompletions:
         On API exception: emit ERROR, flush, and re-raise unchanged (FRD-SDK-002).
         """
         session = self._get_session()
+
+        # Backfill prior tool results onto their TOOL_CALL events (fail-open).
+        try:
+            self._backfill_tool_results(kwargs)
+        except Exception:
+            logger.warning("clyro_backfill_tool_results_failed", fail_open=True)
 
         # Pre-LLM input policy — evaluate prompt/input before the call.
         try:
@@ -633,6 +714,25 @@ class TracedCompletions:
             state = self._build_loop_state(kwargs)
             if state is not None:
                 session._check_loop_detection(state, action="chat.completions.create")
+
+    def _enforce_cost_limit_post_call(self, session: Session, kwargs: dict[str, Any], duration_ms: int) -> None:
+        """Block immediately if the just-recorded LLM cost crossed the cost limit.
+
+        Records the ERROR audit event, flushes the turn, and raises
+        CostLimitExceededError before this turn's tool calls are emitted/run.
+        """
+        controls = self._config.controls
+        if not controls.enable_cost_limit or float(session.cumulative_cost) < controls.max_cost_usd:
+            return
+        err = CostLimitExceededError(
+            limit_usd=controls.max_cost_usd,
+            current_cost_usd=float(session.cumulative_cost),
+            session_id=str(session.session_id),
+            step_number=session.step_number,
+        )
+        self._emit_error_event(session, err, kwargs, duration_ms)
+        self._auto_flush(session)
+        raise err
 
     @staticmethod
     def _build_loop_state(kwargs: dict[str, Any]) -> dict[str, Any] | None:
@@ -732,14 +832,22 @@ class TracedCompletions:
         except Exception:
             logger.warning("clyro_process_response_failed", fail_open=True)
 
-        # Tool calls: emit ALL events first, then evaluate policy — so a block on
-        # one tool can't hide the others from the trace.  # Implements FRD-SDK-003, FRD-SDK-004
+        # Post-call cost enforcement: this LLM call's cost was just recorded. Cost is the
+        # one control that can only be known AFTER the call returns, so if it pushed the
+        # cumulative over the limit, stop NOW — before emitting/running this turn's tool
+        # calls — instead of waiting for the next create(). (The pre-call check still
+        # guards the next turn for the other controls.)
+        self._enforce_cost_limit_post_call(session, kwargs, duration_ms)
+
+        # Tool calls: evaluate policy BEFORE emitting each TOOL_CALL, so a blocked tool is
+        # recorded as a POLICY_CHECK(block) and NOT as a tool_call that looks like it ran.
+        # Tools requested before the blocked one are still emitted; the block stops the rest.
+        # Implements FRD-SDK-003, FRD-SDK-004
         try:
             tools = [self._parse_tool_call(tc) for tc in self._extract_tool_calls(response)]
             for name, arguments, tool_id in tools:
+                self._evaluate_tool_policy(session, name, arguments, llm_event_id)  # may block -> raise
                 self._emit_tool_call(session, name, arguments, tool_id, llm_event_id)
-            for name, arguments, _ in tools:
-                self._evaluate_tool_policy(session, name, arguments, llm_event_id)
         except PolicyViolationError:
             self._auto_flush(session)  # persist the POLICY_CHECK record before raising
             raise
@@ -1017,6 +1125,8 @@ class TracedCompletions:
         if event is not None:
             session._events.append(event)
             self._buffer_event(event)
+            if tool_id:  # remember it so its result can be backfilled next turn
+                self._pending_tool_events[tool_id] = event
 
     def _evaluate_tool_policy(
         self, session: Session, tool_name: str | None, arguments: Any, llm_event_id: UUID | None
@@ -1360,6 +1470,12 @@ class AsyncTracedCompletions(TracedCompletions):
         """
         session = await self._get_session()
 
+        # Backfill prior tool results onto their TOOL_CALL events (fail-open).
+        try:
+            self._backfill_tool_results(kwargs)
+        except Exception:
+            logger.warning("clyro_backfill_tool_results_failed", fail_open=True)
+
         try:
             await self._evaluate_llm_policy(session, kwargs)
         except PolicyViolationError:
@@ -1651,6 +1767,8 @@ class AsyncTracedCompletions(TracedCompletions):
         if event is not None:
             session._events.append(event)
             await self._buffer_event(event)
+            if tool_id:  # remember it so its result can be backfilled next turn
+                self._pending_tool_events[tool_id] = event
 
     async def _evaluate_tool_policy(
         self, session: Session, tool_name: str | None, arguments: Any, llm_event_id: UUID | None

@@ -31,7 +31,11 @@ logger = structlog.get_logger(__name__)
 
 # Canonical-key normalization (parity with the backend C2 normalizer): strip the
 # provider prefix, then a channel suffix, then a trailing ISO date.
-_CHANNEL_SUFFIXES = (":free", ":beta", ":extended", "-latest")
+# NOTE: ":free" is intentionally NOT stripped — a ':free' model is a distinct product
+# priced $0 by OpenRouter, so it must keep its own catalog key (else it collapses into
+# the PAID base and gets billed). ':beta'/':extended'/'-latest' are price-equivalent
+# channels of the same model, so they stay stripped.
+_CHANNEL_SUFFIXES = (":beta", ":extended", "-latest")
 _DATE_SUFFIX_RE = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})$")
 
 

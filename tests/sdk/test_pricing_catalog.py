@@ -57,9 +57,17 @@ class TestNormalize:
         assert _normalize("anthropic/claude-3.5-sonnet-20241022") == "claude-3.5-sonnet"
         assert _normalize("gpt-4o-2024-08-06") == "gpt-4o"
 
-    def test_strips_channel_suffix(self):
-        assert _normalize("mistralai/devstral-small:free") == "devstral-small"
+    def test_strips_price_equivalent_channel_suffixes(self):
+        # ':beta'/':extended'/'-latest' are the same model at the same price -> stripped.
         assert _normalize("some-model:extended") == "some-model"
+        assert _normalize("some-model:beta") == "some-model"
+        assert _normalize("gpt-4o-latest") == "gpt-4o"
+
+    def test_keeps_free_channel(self):
+        # ':free' is a DISTINCT product priced $0 -> NOT stripped, keeps its own key
+        # (else it collapses into the paid base and gets billed).
+        assert _normalize("mistralai/devstral-small:free") == "devstral-small:free"
+        assert _normalize("openai/gpt-oss-120b:free") == "gpt-oss-120b:free"
 
     def test_lowercases_and_trims(self):
         assert _normalize("  OpenAI/GPT-4o  ") == "gpt-4o"

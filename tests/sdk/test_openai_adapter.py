@@ -443,9 +443,10 @@ class TestExecutionControls:
         )
         client = MockOpenAIClient(MockCompletions(MockCompletion(usage=MockUsage(1000, 1000))))
         traced = _traced(client, cfg)
-        traced.chat.completions.create(model="gpt-4o", messages=[])  # accrues cost
+        # Enforced at the FIRST crossing: this call's own recorded cost pushes the
+        # cumulative over the ceiling, so it is blocked right after the LLM cost is logged.
         with pytest.raises(CostLimitExceededError):
-            traced.chat.completions.create(model="gpt-4o", messages=[])  # cost now over ceiling
+            traced.chat.completions.create(model="gpt-4o", messages=[])
         traced.close()
 
 
@@ -479,7 +480,7 @@ class TestInputPolicy:
 
 
 class TestTraceCompletenessAndFlush:
-    def test_block_on_first_tool_still_emits_all(self, config, monkeypatch):
+    def test_block_on_first_tool_not_emitted(self, config, monkeypatch):
         from clyro.session import Session
 
         def _block(self, action_type, parameters=None, **kw):
@@ -495,8 +496,9 @@ class TestTraceCompletenessAndFlush:
         traced = _traced(MockOpenAIClient(MockCompletions(response)), config)
         with pytest.raises(PolicyViolationError):
             traced.chat.completions.create(model="gpt-4o", messages=[])
-        # all 3 TOOL_CALL events emitted before the block hides any of them
-        assert len(_events(traced, EventType.TOOL_CALL)) == 3
+        # Policy is evaluated BEFORE emitting each TOOL_CALL, so a blocked tool is never
+        # emitted as a tool_call — it surfaces as the raised PolicyViolationError instead.
+        assert len(_events(traced, EventType.TOOL_CALL)) == 0
         traced.close()
 
     def test_completed_turn_auto_flushes(self, config):
@@ -913,3 +915,54 @@ class TestStreamUsageInjectionSafety:
         list(traced.chat.completions.create(model="x", messages=[], stream=True))
         assert completions.calls[0].get("stream_options") == {"include_usage": True}
         traced.close()
+
+
+# ---------------------------------------------------------------------------
+# Tool-result backfill (FRD-SDK-003) — the next turn's role:"tool" message is
+# attached to the matching TOOL_CALL event's output_data (parity w/ Anthropic).
+# ---------------------------------------------------------------------------
+
+
+class TestToolResultBackfill:
+    def test_result_backfilled_onto_tool_call(self, config):
+        msg = MockMessage(content=None, tool_calls=[MockToolCall("call_1", "get_weather", '{"city": "Paris"}')])
+        client = MockOpenAIClient(MockCompletions(MockCompletion(choices=[MockChoice(msg, "tool_calls")])))
+        traced = _traced(client, config)
+        traced.chat.completions.create(model="gpt-4o", messages=[])
+        tool = _events(traced, EventType.TOOL_CALL)[0]
+        assert tool.output_data is None  # no result yet
+
+        client.chat.completions._response = MockCompletion()  # next turn: normal stop
+        traced.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "tool", "tool_call_id": "call_1", "content": "22C sunny"}]
+        )
+        assert tool.output_data == {"result": "22C sunny"}  # backfilled by tool_call_id
+        traced.close()
+
+    def test_unmatched_id_not_backfilled(self, config):
+        msg = MockMessage(content=None, tool_calls=[MockToolCall("call_1", "get_weather", "{}")])
+        client = MockOpenAIClient(MockCompletions(MockCompletion(choices=[MockChoice(msg, "tool_calls")])))
+        traced = _traced(client, config)
+        traced.chat.completions.create(model="gpt-4o", messages=[])
+        tool = _events(traced, EventType.TOOL_CALL)[0]
+        client.chat.completions._response = MockCompletion()
+        traced.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "tool", "tool_call_id": "other", "content": "r"}]
+        )
+        assert tool.output_data is None  # id didn't match -> left as-is
+        traced.close()
+
+    async def test_async_result_backfilled(self, config):
+        msg = MockMessage(content=None, tool_calls=[MockToolCall("call_1", "get_weather", "{}")])
+        client = MockAsyncOpenAIClient(MockAsyncCompletions(MockCompletion(choices=[MockChoice(msg, "tool_calls")])))
+        traced = _traced(client, config)
+        await traced.chat.completions.create(model="gpt-4o", messages=[])
+        tool = _events(traced, EventType.TOOL_CALL)[0]
+        assert tool.output_data is None
+
+        client.chat.completions._response = MockCompletion()
+        await traced.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "tool", "tool_call_id": "call_1", "content": "22C sunny"}]
+        )
+        assert tool.output_data == {"result": "22C sunny"}
+        await traced.close()
