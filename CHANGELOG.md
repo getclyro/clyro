@@ -35,6 +35,14 @@ it can never invent an id). Runs locally with no Clyro account.
   then tagged with that `agent_id`.
 - `--prefill` sets a `clyro-sdk/<version>` `User-Agent`; the catalogue is fetched
   from the API endpoint and wizard deep-links default to `https://app.clyro.dev`.
+- An explicit `--llm-transport` is now always honored. Previously cloud mode
+  force-overrode it to `anthropic-api`; cloud now only *biases* the `auto` default
+  toward anthropic-api and still falls back gracefully (so a developer's local
+  `claude-code` works even with a cloud api_key configured).
+- Fixed: the anthropic-api transport no longer receives the Clyro api_key
+  (`cly_…`) as its Anthropic key — it reads `ANTHROPIC_API_KEY` from the
+  environment. The old wiring sent the Clyro key to api.anthropic.com (→ 401
+  invalid x-api-key).
 - New `policy_recommender` config block on `ClyroConfig`
   (`llm_transport`, `cache_ttl_days`, `dashboard_base_url`, …).
 

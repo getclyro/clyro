@@ -142,12 +142,28 @@ class TestTransport:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         assert resolve_transport("auto") is None
 
-    def test_cloud_forces_anthropic(self, monkeypatch):
+    def test_explicit_claude_code_honored_in_cloud(self, monkeypatch):
+        # A: an explicit --llm-transport is never overridden by cloud mode.
         monkeypatch.setattr("clyro.recommender.transport.shutil.which", lambda _: "/usr/bin/claude")
-        # cloud ignores claude-code availability and requires a key → unavailable here
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        with pytest.raises(TransportUnavailable):
-            resolve_transport("auto", deployment_mode="cloud")
+        t = resolve_transport("claude-code", deployment_mode="cloud")
+        assert t is not None and t.name == "claude-code"
+
+    def test_cloud_auto_falls_back_to_claude_without_anthropic_key(self, monkeypatch):
+        # A: cloud auto prefers anthropic-api but falls back gracefully (no force).
+        monkeypatch.setattr("clyro.recommender.transport.shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        t = resolve_transport("auto", deployment_mode="cloud")
+        assert t is not None and t.name == "claude-code"
+
+    def test_cloud_auto_prefers_anthropic_when_available(self, monkeypatch):
+        # A: when both are available, cloud auto picks anthropic-api first.
+        monkeypatch.setattr("clyro.recommender.transport.shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setattr(
+            "clyro.recommender.transport.AnthropicApiTransport.is_available", lambda self: True
+        )
+        t = resolve_transport("auto", deployment_mode="cloud")
+        assert t is not None and t.name == "anthropic-api"
 
 
 # --- proposer schema validation (FRD-PR-010) ----------------------------------

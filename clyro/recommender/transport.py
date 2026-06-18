@@ -9,19 +9,17 @@
 Three paths (FRD-PR-011): Claude Code CLI subprocess, Anthropic API key, and
 rule-based (no LLM). Selection follows ``llm_transport`` (FRD-PR-012):
 ``auto`` tries claude-code → anthropic-api → rule-based; explicit modes fail loud
-(FRD-PR-015). Cloud forces ``anthropic-api`` (FRD-PR-013).
+(FRD-PR-015). An explicit ``llm_transport`` is always honored — cloud only biases
+the ``auto`` default toward anthropic-api (still falling back gracefully).
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import subprocess
 from typing import Protocol
-
-logger = logging.getLogger("clyro.recommender.transport")
 
 VALID_TRANSPORTS = ("auto", "claude-code", "anthropic-api", "rule-based")
 
@@ -162,14 +160,6 @@ def resolve_transport(
             f"Invalid llm_transport '{requested}'. Valid: {', '.join(VALID_TRANSPORTS)}"
         )
 
-    # Cloud forces anthropic-api server-side regardless of request (FRD-PR-013).
-    if deployment_mode == "cloud" and requested != "anthropic-api":
-        logger.warning(
-            "clyro.recommender.transport_override_cloud requested=%s forced=anthropic-api",
-            requested,
-        )
-        requested = "anthropic-api"
-
     claude_code = ClaudeCodeTransport()
     anthropic_api = AnthropicApiTransport(api_key=api_key)
 
@@ -190,9 +180,14 @@ def resolve_transport(
             )
         return anthropic_api
 
-    # auto: first available wins, else rule-based (FRD-PR-014).
-    if claude_code.is_available():
-        return claude_code
-    if anthropic_api.is_available():
-        return anthropic_api
+    # auto: first available wins, else rule-based (FRD-PR-014). An explicit
+    # --llm-transport is honored above and never reaches here; only "auto" does.
+    # In cloud we *prefer* anthropic-api but still fall back gracefully — it is a
+    # bias, not a forced override (so a developer's local claude-code still works).
+    order = (
+        (anthropic_api, claude_code) if deployment_mode == "cloud" else (claude_code, anthropic_api)
+    )
+    for transport in order:
+        if transport.is_available():
+            return transport
     return None
