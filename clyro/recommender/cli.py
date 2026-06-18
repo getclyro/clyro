@@ -186,10 +186,13 @@ def handle_suggest(args: argparse.Namespace) -> int:
     try:
         # Catalogue (/v1/agent-types, /concerns, /kits) lives on the API, not the
         # dashboard — use config.endpoint, the same host the prefill POST targets.
+        # NB: do NOT pass config.api_key here — that's the Clyro key (cly_…), not
+        # an Anthropic key. The anthropic-api transport reads ANTHROPIC_API_KEY
+        # from the environment itself; passing the Clyro key sent it to
+        # api.anthropic.com as x-api-key (→ 401 invalid x-api-key).
         result = Recommender(base_url=config.endpoint).suggest(
             agent,
             llm_transport=transport,
-            api_key=config.api_key,
             deployment_mode=deployment_mode,
             use_cache=not args.no_cache,
         )
