@@ -1,6 +1,6 @@
 [project]
 name = "clyro"
-version = "0.2.9"
+version = "0.3.0"
 description = "Runtime governance for AI agents — prevent failures before they happen"
 readme = "README.md"
 license = "Apache-2.0"
@@ -61,6 +61,7 @@ dev = [
 ]
 
 [project.scripts]
+clyro = "clyro.cli:main"
 clyro-sdk = "clyro.cli:main"
 clyro-mcp = "clyro.mcp.cli:main"
 clyro-hook = "clyro.hooks.cli:main"

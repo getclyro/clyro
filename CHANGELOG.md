@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**`clyro suggest` — the Policy Recommender.** Point Clyro at an agent you've
+already built and it recommends what to govern — the agent's `agent_type`, the
+`concerns` worth tracking, and the `kits` to apply, each with a rationale and
+confidence. It introspects the wrapped agent (tools, system prompt, topology,
+model) without running it, maps it to the catalogue with deterministic rules,
+and optionally refines the result with an LLM (schema-gated to the catalogue, so
+it can never invent an id). Runs locally with no Clyro account.
+
+- New `clyro suggest <import-path>` command (the SDK now also installs a `clyro`
+  console-script alongside `clyro-sdk`).
+- Static introspection across all four frameworks (LangGraph, CrewAI, Anthropic
+  SDK, Claude Agent SDK) with graceful degradation — never raises on an
+  unrecognised agent.
+- LLM transports: `auto` (Claude Code CLI → Anthropic API key → rule-based),
+  plus explicit `claude-code` / `anthropic-api` / `rule-based`.
+- Flags: `--llm-transport`, `--json`, `--out`, `--prefill` (POST the
+  recommendation and get a one-time `?prefill=<token>` wizard link),
+  `--agent-name`, `--agent-id`, `--apply`, `--no-cache`, `--debug`. Results are
+  cached by an agent fingerprint at `~/.clyro/proposer-cache.db`.
+- A plain `--prefill` is the **new-agent** flow — it sends no `agent_id` (the
+  wizard creates the agent). To **re-recommend an existing agent**, identify it
+  with `--agent-id <uuid>` or `--agent-name <name>` (derives
+  `uuid5(org_id, name)`, matching `clyro.wrap()` registration); the prefill is
+  then tagged with that `agent_id`.
+- `--prefill` sets a `clyro-sdk/<version>` `User-Agent`; the catalogue is fetched
+  from the API endpoint and wizard deep-links default to `https://app.clyro.dev`.
+- An explicit `--llm-transport` is now always honored. Previously cloud mode
+  force-overrode it to `anthropic-api`; cloud now only *biases* the `auto` default
+  toward anthropic-api and still falls back gracefully (so a developer's local
+  `claude-code` works even with a cloud api_key configured).
+- Fixed: the anthropic-api transport no longer receives the Clyro api_key
+  (`cly_…`) as its Anthropic key — it reads `ANTHROPIC_API_KEY` from the
+  environment. The old wiring sent the Clyro key to api.anthropic.com (→ 401
+  invalid x-api-key).
+- New `policy_recommender` config block on `ClyroConfig`
+  (`llm_transport`, `cache_ttl_days`, `dashboard_base_url`, …).
+
+See [`docs/sdk/policy-recommender.md`](docs/sdk/policy-recommender.md).
+
 ### ⚠️ Breaking Changes
 
 **Policy operator semantics flipped to trigger-on-match.** Operators previously

@@ -210,7 +210,7 @@ class TestCircuitBreaker:
     def test_reset_returns_to_closed(self):
         """Test reset returns circuit to closed state."""
         cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1))
-        asyncio.get_event_loop().run_until_complete(cb.record_failure())
+        asyncio.run(cb.record_failure())
 
         cb.reset()
 

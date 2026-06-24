@@ -144,6 +144,38 @@ class ExecutionControls(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PolicyRecommenderConfig(BaseModel):
+    """Policy-recommender settings (policy-recommender FRD-PR-012).
+
+    ``ClyroConfig`` forbids extra keys, so the recommender's settings live in this
+    explicit nested submodel rather than a free-form ``policy_recommender.*`` key.
+    """
+
+    llm_transport: Literal["auto", "claude-code", "anthropic-api", "rule-based"] = Field(
+        default="auto",
+        description="LLM transport for `clyro suggest`. CLI --llm-transport overrides this.",
+    )
+    cache_ttl_days: int = Field(
+        default=7,
+        description="TTL (days) for the local fingerprint cache (FRD-PR-016).",
+    )
+    prefill_ttl_seconds: int = Field(
+        default=600,
+        description="Requested TTL for issued pre-fill tokens (server may clamp).",
+    )
+    dashboard_base_url: str = Field(
+        default="https://app.clyro.dev",
+        description="Base URL for the dashboard wizard deep-links (the catalogue is "
+        "fetched from the API endpoint, not this).",
+    )
+    redact_prompt: bool = Field(
+        default=False,
+        description="Redact the system prompt before sending it to the LLM proposer.",
+    )
+
+    model_config = {"extra": "forbid"}
+
+
 class ClyroConfig(BaseModel):
     """
     SDK configuration model.
@@ -276,6 +308,12 @@ class ClyroConfig(BaseModel):
         default_factory=lambda: DEFAULT_PRICING.copy(),
         description="Token pricing per model (input/output per 1K tokens). "
         "Users can override or extend this dict with custom models.",
+    )
+
+    # Policy recommender (policy-recommender FRD-PR-012)
+    policy_recommender: PolicyRecommenderConfig = Field(
+        default_factory=PolicyRecommenderConfig,
+        description="Settings for `clyro suggest` (the policy recommender).",
     )
 
     model_config = {"extra": "forbid"}
