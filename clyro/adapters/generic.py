@@ -242,6 +242,11 @@ def detect_adapter(agent: Callable) -> str:
     from clyro.adapters.claude_agent_sdk import is_claude_agent_sdk_agent
     from clyro.adapters.crewai import is_crewai_agent
     from clyro.adapters.langgraph import is_langgraph_agent
+    from clyro.adapters.openai import is_openai_agent
+
+    # Check for OpenAI-compatible clients (incl. OpenRouter base_url)  # Implements FRD-SDK-001
+    if is_openai_agent(agent):
+        return "openai"
 
     # Check for Anthropic first (highest specificity)
     if is_anthropic_agent(agent):

@@ -52,6 +52,8 @@ class Framework(StrEnum):
     MCP = "mcp"  # FRD-015: MCP wrapper as first-class framework
     CLAUDE_AGENT_SDK = "claude_agent_sdk"  # Claude Agent SDK adapter
     ANTHROPIC = "anthropic"  # Anthropic SDK adapter (FRD-001–FRD-012)
+    OPENAI = "openai"  # OpenAI-compatible SDK adapter (FRD-SDK-001–006)
+    OPENROUTER = "openrouter"  # OpenAI-compatible adapter pointed at an OpenRouter base_url
 
 
 class AgentStage(StrEnum):
