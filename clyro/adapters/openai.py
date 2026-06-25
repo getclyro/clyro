@@ -113,6 +113,7 @@ def is_openai_agent(obj: Any) -> bool:
     except Exception:
         return False
 
+
 def _base_url_host(client: Any) -> str:
     """Lowercased hostname of the client's base_url ('' when unset/unparseable)."""
     try:
@@ -136,6 +137,7 @@ def _resolve_framework(client: Any) -> Framework:
     """
     host = _base_url_host(client)
     return Framework.OPENROUTER if _host_is(host, "openrouter.ai") else Framework.OPENAI
+
 
 def _supports_stream_usage_option(client: Any) -> bool:
     """Whether the endpoint is known to accept ``stream_options.include_usage``.
@@ -722,7 +724,9 @@ class TracedCompletions:
             if state is not None:
                 session._check_loop_detection(state, action="chat.completions.create")
 
-    def _enforce_cost_limit_post_call(self, session: Session, kwargs: dict[str, Any], duration_ms: int) -> None:
+    def _enforce_cost_limit_post_call(
+        self, session: Session, kwargs: dict[str, Any], duration_ms: int
+    ) -> None:
         """Block immediately if the just-recorded LLM cost crossed the cost limit.
 
         Records the ERROR audit event, flushes the turn, and raises
@@ -831,10 +835,22 @@ class TracedCompletions:
         try:
             input_tokens, output_tokens, cached = self._extract_tokens(response)
             model = kwargs.get("model") or _get(response, "model") or ""
-            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
-            output_data = self._build_output_data(response) if self._config.capture_outputs else None
+            input_data = (
+                self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            )
+            output_data = (
+                self._build_output_data(response) if self._config.capture_outputs else None
+            )
             llm_event_id = self._emit_llm_call(
-                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=False
+                session,
+                model,
+                input_tokens,
+                output_tokens,
+                cached,
+                duration_ms,
+                input_data,
+                output_data,
+                estimated=False,
             )
         except Exception:
             logger.warning("clyro_process_response_failed", fail_open=True)
@@ -853,7 +869,9 @@ class TracedCompletions:
         try:
             tools = [self._parse_tool_call(tc) for tc in self._extract_tool_calls(response)]
             for name, arguments, tool_id in tools:
-                self._evaluate_tool_policy(session, name, arguments, llm_event_id)  # may block -> raise
+                self._evaluate_tool_policy(
+                    session, name, arguments, llm_event_id
+                )  # may block -> raise
                 self._emit_tool_call(session, name, arguments, tool_id, llm_event_id)
         except PolicyViolationError:
             self._auto_flush(session)  # persist the POLICY_CHECK record before raising
@@ -887,7 +905,12 @@ class TracedCompletions:
         return self._wrap_stream(session, stream, kwargs, start_time, injected_usage)
 
     def _wrap_stream(
-        self, session: Session, stream: Any, kwargs: dict[str, Any], start_time: float, injected_usage: bool
+        self,
+        session: Session,
+        stream: Any,
+        kwargs: dict[str, Any],
+        start_time: float,
+        injected_usage: bool,
     ) -> Any:
         """Yield chunks to the caller, accumulate, then emit on completion (FRD-SDK-006)."""
         model = kwargs.get("model") or ""
@@ -925,10 +948,14 @@ class TracedCompletions:
             raise
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        self._finalize_stream(session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms)
+        self._finalize_stream(
+            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms
+        )
 
     @staticmethod
-    def _accumulate_chunk(chunk: Any, content_parts: list[str], tool_acc: dict[int, dict[str, Any]]) -> None:
+    def _accumulate_chunk(
+        chunk: Any, content_parts: list[str], tool_acc: dict[int, dict[str, Any]]
+    ) -> None:
         """Accumulate streamed content + assemble tool-call deltas by index (Edge Case)."""
         choices = _get(chunk, "choices")
         if not choices:
@@ -981,10 +1008,20 @@ class TracedCompletions:
                 input_tokens = self._estimate_input_tokens(kwargs)
                 output_tokens = max(1, len(text) // 4)
 
-            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            input_data = (
+                self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            )
             output_data = {"content": text} if self._config.capture_outputs else None
             llm_event_id = self._emit_llm_call(
-                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=estimated
+                session,
+                model,
+                input_tokens,
+                output_tokens,
+                cached,
+                duration_ms,
+                input_data,
+                output_data,
+                estimated=estimated,
             )
         except Exception:
             logger.warning("clyro_stream_finalize_failed", fail_open=True)
@@ -1040,7 +1077,9 @@ class TracedCompletions:
         cached = _extract_cached_tokens(_get(response, "usage"))
         return input_tokens, output_tokens, cached
 
-    def _compute_cost(self, input_tokens: int, output_tokens: int, cached_tokens: int, model: str) -> Decimal:
+    def _compute_cost(
+        self, input_tokens: int, output_tokens: int, cached_tokens: int, model: str
+    ) -> Decimal:
         """
         Cost in USD, pricing cached input tokens at a discount.  # Implements FRD-SDK-005
 
@@ -1159,7 +1198,9 @@ class TracedCompletions:
             raise
         except Exception as e:
             if self._config.fail_open:
-                logger.warning("policy_evaluation_failed", error=str(e), tool_name=tool_name, fail_open=True)
+                logger.warning(
+                    "policy_evaluation_failed", error=str(e), tool_name=tool_name, fail_open=True
+                )
             else:
                 raise PolicyViolationError(
                     rule_id="policy_unavailable",
@@ -1566,10 +1607,22 @@ class AsyncTracedCompletions(TracedCompletions):
         try:
             input_tokens, output_tokens, cached = self._extract_tokens(response)  # pure
             model = kwargs.get("model") or _get(response, "model") or ""
-            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
-            output_data = self._build_output_data(response) if self._config.capture_outputs else None
+            input_data = (
+                self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            )
+            output_data = (
+                self._build_output_data(response) if self._config.capture_outputs else None
+            )
             llm_event_id = await self._emit_llm_call(
-                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=False
+                session,
+                model,
+                input_tokens,
+                output_tokens,
+                cached,
+                duration_ms,
+                input_data,
+                output_data,
+                estimated=False,
             )
         except Exception:
             logger.warning("clyro_process_response_failed", fail_open=True)
@@ -1608,7 +1661,12 @@ class AsyncTracedCompletions(TracedCompletions):
         return self._wrap_stream(session, stream, kwargs, start_time, injected_usage)
 
     async def _wrap_stream(
-        self, session: Session, stream: Any, kwargs: dict[str, Any], start_time: float, injected_usage: bool
+        self,
+        session: Session,
+        stream: Any,
+        kwargs: dict[str, Any],
+        start_time: float,
+        injected_usage: bool,
     ) -> Any:
         """Async-generator: yield chunks, accumulate, emit on completion (FRD-SDK-006)."""
         model = kwargs.get("model") or ""
@@ -1644,7 +1702,9 @@ class AsyncTracedCompletions(TracedCompletions):
             raise
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        await self._finalize_stream(session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms)
+        await self._finalize_stream(
+            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms
+        )
 
     async def _finalize_stream(
         self,
@@ -1673,10 +1733,20 @@ class AsyncTracedCompletions(TracedCompletions):
                 input_tokens = self._estimate_input_tokens(kwargs)
                 output_tokens = max(1, len(text) // 4)
 
-            input_data = self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            input_data = (
+                self._build_input_data(kwargs) if self._config.capture_inputs else {"model": model}
+            )
             output_data = {"content": text} if self._config.capture_outputs else None
             llm_event_id = await self._emit_llm_call(
-                session, model, input_tokens, output_tokens, cached, duration_ms, input_data, output_data, estimated=estimated
+                session,
+                model,
+                input_tokens,
+                output_tokens,
+                cached,
+                duration_ms,
+                input_data,
+                output_data,
+                estimated=estimated,
             )
         except Exception:
             logger.warning("clyro_stream_finalize_failed", fail_open=True)
@@ -1795,7 +1865,9 @@ class AsyncTracedCompletions(TracedCompletions):
             raise
         except Exception as e:
             if self._config.fail_open:
-                logger.warning("policy_evaluation_failed", error=str(e), tool_name=tool_name, fail_open=True)
+                logger.warning(
+                    "policy_evaluation_failed", error=str(e), tool_name=tool_name, fail_open=True
+                )
             else:
                 raise PolicyViolationError(
                     rule_id="policy_unavailable",
