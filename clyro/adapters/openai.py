@@ -46,6 +46,7 @@ import time
 import traceback
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import structlog
@@ -112,6 +113,19 @@ def is_openai_agent(obj: Any) -> bool:
     except Exception:
         return False
 
+def _base_url_host(client: Any) -> str:
+    """Lowercased hostname of the client's base_url ('' when unset/unparseable)."""
+    try:
+        raw = str(getattr(client, "base_url", "") or "")
+        return (urlsplit(raw).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _host_is(host: str, domain: str) -> bool:
+    """True when host is exactly domain or a subdomain of it."""
+    return host == domain or host.endswith("." + domain)
+
 
 def _resolve_framework(client: Any) -> Framework:
     """OpenAI vs OpenRouter, by the client's base_url.  # Implements FRD-SDK-001
@@ -120,12 +134,8 @@ def _resolve_framework(client: Any) -> Framework:
     that URL points at OpenRouter we tag events/agent/logs as `openrouter` rather
     than `openai` so traffic is attributed to the right provider.
     """
-    try:
-        base_url = str(getattr(client, "base_url", "") or "").lower()
-    except Exception:
-        base_url = ""
-    return Framework.OPENROUTER if "openrouter.ai" in base_url else Framework.OPENAI
-
+    host = _base_url_host(client)
+    return Framework.OPENROUTER if _host_is(host, "openrouter.ai") else Framework.OPENAI
 
 def _supports_stream_usage_option(client: Any) -> bool:
     """Whether the endpoint is known to accept ``stream_options.include_usage``.
@@ -134,11 +144,8 @@ def _supports_stream_usage_option(client: Any) -> bool:
     known to accept it; other OpenAI-compatible endpoints (Azure, vLLM, Groq, …)
     may reject the param, so we must NOT inject it there.
     """
-    try:
-        base_url = str(getattr(client, "base_url", "") or "").lower()
-    except Exception:
-        return False
-    return base_url == "" or "openai.com" in base_url or "openrouter.ai" in base_url
+    host = _base_url_host(client)
+    return host == "" or _host_is(host, "openai.com") or _host_is(host, "openrouter.ai")
 
 
 def _parse_version(version_str: str) -> tuple[int, ...]:
