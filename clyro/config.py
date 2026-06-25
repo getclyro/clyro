@@ -22,7 +22,14 @@ from typing import Any, Literal
 
 import structlog
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from clyro.constants import DEFAULT_API_URL
 from clyro.exceptions import ClyroConfigError
