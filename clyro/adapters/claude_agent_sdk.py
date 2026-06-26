@@ -1744,8 +1744,11 @@ class ClaudeAgentAdapter:
         return create_llm_call_event(
             session_id=session.session_id,
             step_number=0,  # Auto-increment to next unique step number
-            model="claude",
-            input_data={"model": "claude", "framework": "claude_agent_sdk"},
+            # Use the real model from ClaudeAgentOptions instead of a hardcoded "claude".
+            # create_llm_call_event mirrors it into input_data["model"] (the field the
+            # backend derives the model column from); None → backend buckets as 'unknown'.
+            model=getattr(self._agent, "model", None),
+            input_data={"framework": "claude_agent_sdk"},
             output_data=output_data,
             agent_id=session.agent_id,
             duration_ms=duration_ms,
