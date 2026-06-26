@@ -72,6 +72,23 @@ class TestNormalize:
     def test_lowercases_and_trims(self):
         assert _normalize("  OpenAI/GPT-4o  ") == "gpt-4o"
 
+    def test_single_digit_version_dash_becomes_dot(self):
+        # Provider API ids use dashes for the minor version; the catalog keys use dots.
+        assert _normalize("claude-haiku-4-5-20251001") == "claude-haiku-4.5"
+        assert _normalize("anthropic/claude-sonnet-4-5") == "claude-sonnet-4.5"
+        assert _normalize("claude-opus-4-1") == "claude-opus-4.1"
+        assert _normalize("claude-3-5-sonnet") == "claude-3.5-sonnet"
+        assert _normalize("gemini-2-0-flash") == "gemini-2.0-flash"
+        assert _normalize("glm-4-6") == "glm-4.6"
+        assert _normalize("gpt-4-1") == "gpt-4.1"
+
+    def test_multi_digit_dash_is_not_a_version(self):
+        # Context windows, snapshot dates and other multi-digit dashes must NOT convert.
+        assert _normalize("gpt-4-32k") == "gpt-4-32k"
+        assert _normalize("gpt-4-0613") == "gpt-4-0613"
+        assert _normalize("gpt-4-1106-preview") == "gpt-4-1106-preview"
+        assert _normalize("gpt-4o-mini") == "gpt-4o-mini"
+
 
 # ---------------------------------------------------------------------------
 # Cache parsing + resilience
