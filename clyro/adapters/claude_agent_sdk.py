@@ -1708,6 +1708,20 @@ class ClaudeAgentAdapter:
                 handler._policy_evaluator = session._policy_evaluator
         return {"start_time": time.perf_counter(), "handler": handler}
 
+    def _resolve_model(self) -> str | None:
+        """Return the model configured on the wrapped agent's ClaudeAgentOptions.
+
+        The wrapped object (a ClaudeSDKClient, a bound method, or the options object
+        itself) does not expose ``.model`` directly — the model lives on
+        ``.options.model``. Resolve it the same way ``before_call`` resolves the
+        options object, including unwrapping bound methods via ``__self__``.
+        """
+        agent_obj = self._agent
+        if hasattr(agent_obj, "__self__"):
+            agent_obj = agent_obj.__self__
+        options = getattr(agent_obj, "options", None) or agent_obj
+        return getattr(options, "model", None)
+
     def after_call(self, session: Session, result: Any, context: dict[str, Any]) -> TraceEvent:
         """Synthesize an llm_call event for the Claude Agent SDK execution.
 
@@ -1741,11 +1755,17 @@ class ClaudeAgentAdapter:
             except Exception:
                 output_data = {"result": "<serialization_error>"}
 
+        model = self._resolve_model()
         return create_llm_call_event(
             session_id=session.session_id,
             step_number=0,  # Auto-increment to next unique step number
-            model="claude",
-            input_data={"model": "claude", "framework": "claude_agent_sdk"},
+            # The model lives on ClaudeAgentOptions (agent.options.model), not on the
+            # wrapped agent/bound method — resolve it the same way before_call resolves
+            # options. Pass it as model (-> event_name) AND copy it into
+            # input_data["model"], the field the backend derives the model column from.
+            # None -> backend buckets as 'unknown' (never dropped).
+            model=model,
+            input_data={"framework": "claude_agent_sdk", "model": model},
             output_data=output_data,
             agent_id=session.agent_id,
             duration_ms=duration_ms,
