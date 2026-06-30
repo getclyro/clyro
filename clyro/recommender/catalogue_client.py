@@ -74,7 +74,18 @@ def _build_snapshot(
 
 
 def _http_get_json(url: str, timeout: float) -> dict[str, Any]:
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    from clyro import __version__  # local import avoids a circular import at module load
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            # urllib's default "Python-urllib/x" UA is banned by Cloudflare's default
+            # bot rules (403, error code 1010) — identify as the SDK, same as the
+            # prefill POST does. Without this the first-run catalogue fetch is blocked.
+            "User-Agent": f"clyro-sdk/{__version__}",
+        },
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (trusted base_url)
         return json.loads(resp.read().decode("utf-8"))
 
