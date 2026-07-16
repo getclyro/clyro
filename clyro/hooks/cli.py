@@ -16,6 +16,7 @@ import time
 import structlog
 
 from clyro.constants import ISSUE_TRACKER_URL
+from clyro.dry_run import resolve_dry_run_env
 
 from .audit import AuditLogger
 from .backend import resolve_agent_id
@@ -102,9 +103,14 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     try:
         config = load_hook_config(args.config)
     except ConfigError as e:
-        # Can't evaluate without valid config — fail-closed
+        # Can't evaluate without valid config — fail-closed, UNLESS dry_run.
+        # A10 FRD-014: in dry_run a governance-stack failure resolves to allow.
+        # No config is loaded here, so read the env override directly.
         print(_error_with_context(str(e)), file=sys.stderr)
-        return EXIT_FAIL_CLOSED
+        return EXIT_FAIL_OPEN if resolve_dry_run_env() else EXIT_FAIL_CLOSED
+
+    # A10: resolved dry-run mode for the fail-closed relaxation below (FRD-014).
+    is_dry_run = config.resolved_is_dry_run
 
     # Resolve agent_id on first invocation (fail-open)
     _ensure_agent_id(config, hook_input.session_id)
@@ -115,13 +121,15 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         with StateLock(hook_input.session_id):
             result = evaluate(hook_input, config, audit)
     except TimeoutError:
-        # Lock contention — fail-closed: deny rather than skip evaluation
+        # Lock contention — fail-closed: deny rather than skip evaluation.
+        # A10 FRD-014: in dry_run this relaxes to allow (nothing blocks).
         logger.error("state_lock_timeout", session_id=hook_input.session_id)
-        return EXIT_FAIL_CLOSED
+        return EXIT_FAIL_OPEN if is_dry_run else EXIT_FAIL_CLOSED
     except Exception as e:
-        # Governance stack crash — fail-closed: deny unevaluated calls
+        # Governance stack crash — fail-closed: deny unevaluated calls.
+        # A10 FRD-014: in dry_run this relaxes to allow.
         logger.error("evaluate_unexpected_error", error=_error_with_context(str(e)))
-        return EXIT_FAIL_CLOSED
+        return EXIT_FAIL_OPEN if is_dry_run else EXIT_FAIL_CLOSED
     finally:
         audit.close()
 

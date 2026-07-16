@@ -24,6 +24,7 @@ import sys
 import time
 
 from clyro.config import WrapperConfig
+from clyro.dry_run import WouldBlockLatch, log_would_block
 from clyro.mcp.audit import AuditLogger
 from clyro.mcp.errors import format_error
 from clyro.mcp.log import get_logger
@@ -35,6 +36,14 @@ logger = get_logger(__name__)
 
 # Maximum line length we'll attempt to parse (10 MB guard — TDD §8.1)
 _MAX_LINE_BYTES = 10 * 1024 * 1024
+
+# A10: map an MCP block_type → the four canonical check types (FRD-008/011).
+_BLOCK_TYPE_TO_CHECK: dict[str, str] = {
+    "loop_detected": "loop",
+    "step_limit_exceeded": "step",
+    "budget_exceeded": "cost",
+    "policy_violation": "policy",
+}
 
 
 class _FramingError(Exception):
@@ -60,6 +69,7 @@ class MessageRouter:
         transport: StdioTransport,
         prevention: PreventionStack,
         audit: AuditLogger,
+        dry_run: bool | None = None,
     ) -> None:
         self._config = config
         self._session = session
@@ -69,6 +79,36 @@ class MessageRouter:
         self._pending_requests: dict[str | int, PendingCall] = {}
         self._shutdown_event = asyncio.Event()
         self._first_message_checked = False
+        # A10: the resolved dry-run mode. The CLI passes the CLI>env>config
+        # precedence result explicitly; fall back to config (env>config) if not
+        # given. Implements FRD-001/002/O-4.
+        self._dry_run = dry_run if dry_run is not None else config.resolved_is_dry_run
+        # A10 FRD-022: one would-block marker per distinct reason per session.
+        self._wb_latch = WouldBlockLatch()
+
+    def _would_block_key(
+        self,
+        check_type: str,
+        rule_id: str | None,
+        tool_name: str,
+        decision: BlockDecision,
+    ) -> str:
+        """Build the de-dup key for an MCP would-block. Implements FRD-022.
+
+        Mirrors the SDK's semantics so all three surfaces behave identically
+        (NFR-002):
+        - **step / cost** are *sticky* (once tripped, every later call trips) →
+          one marker per session.
+        - **loop** → one per distinct loop signature.
+        - **policy** is per-action → one per (rule, tool).
+        """
+        session = self._session.session_id
+        if check_type in ("step", "cost"):
+            return f"{session}:{check_type}"
+        if check_type == "loop":
+            signature = (decision.details or {}).get("pattern_hash", "loop")
+            return f"{session}:loop:{signature}"
+        return WouldBlockLatch.policy_key(session, rule_id, tool_name, "block")
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -231,13 +271,58 @@ class MessageRouter:
                 request_id=request_id,
             )
         else:
-            # Block — send error to host, never forward to server
             assert isinstance(decision, BlockDecision)
+            # Extract rule_results from details (stored by PreventionStack)
+            block_rule_results = decision.details.pop("_rule_results", None)
+
+            if self._dry_run:
+                # A10 (FRD-004): forward to the server instead of returning a
+                # JSON-RPC block error; audit a would-block (which emits the
+                # distinct would_block event and NO enforced error sibling —
+                # FRD-017). Implements FRD-004/017.
+                params_json = json.dumps(arguments or {}, default=str)
+                self._pending_requests[request_id] = PendingCall(
+                    request_id=request_id,
+                    tool_name=tool_name,
+                    params_json_len=len(params_json),
+                    forwarded_at=time.monotonic(),
+                )
+                await self._transport.write_to_child(raw)
+
+                # A10 FRD-022: the prevention stack re-evaluates EVERY tools/call,
+                # so without a latch a tripped limit (sticky) or a policy rule
+                # would emit one marker per call — unbounded, burning the org's
+                # trace quota. Record one marker per distinct reason per session,
+                # mirroring the SDK's latch (NFR-002 cross-surface consistency).
+                check_type = _BLOCK_TYPE_TO_CHECK.get(decision.block_type, "policy")
+                rule_id = decision.details.get("policy_id") if decision.details else None
+                first = self._wb_latch.record(
+                    self._would_block_key(check_type, rule_id, tool_name, decision)
+                )
+
+                self._audit.log_tool_call(
+                    tool_name=tool_name,
+                    parameters=arguments,
+                    decision="would_block",
+                    step_number=decision.step_number,
+                    accumulated_cost_usd=self._session.accumulated_cost_usd,
+                    block_reason=decision.block_type,
+                    block_details=decision.details,
+                    duration_ms=duration_ms,
+                    rule_results=block_rule_results,
+                    request_id=request_id,
+                    # Repeats stay in the local JSONL audit (a per-call record) but
+                    # emit no further backend marker or terminal line.
+                    emit_marker=first,
+                )
+                if first:
+                    log_would_block(check_type, tool_name, "block", rule_id)
+                return
+
+            # Block — send error to host, never forward to server
             error_line = format_error(request_id, decision.block_type, decision.details)
             sys.stdout.buffer.write(error_line.encode("utf-8"))
             sys.stdout.buffer.flush()
-            # Extract rule_results from details (stored by PreventionStack)
-            block_rule_results = decision.details.pop("_rule_results", None)
             self._audit.log_tool_call(
                 tool_name=tool_name,
                 parameters=arguments,

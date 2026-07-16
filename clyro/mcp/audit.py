@@ -93,8 +93,15 @@ class AuditLogger(BaseAuditLogger):
         duration_ms: int = 0,
         rule_results: list[dict[str, Any]] | None = None,
         request_id: str | int | None = None,
+        emit_marker: bool = True,
     ) -> None:
-        """Write a ``tool_call`` audit entry and emit trace event if backend enabled."""
+        """Write a ``tool_call`` audit entry and emit trace event if backend enabled.
+
+        ``emit_marker`` (A10 FRD-022): for ``decision="would_block"``, False means
+        this is a *repeat* of an already-recorded reason — the local JSONL audit
+        entry is still written (it is a per-call record) but no further
+        ``would_block`` marker is sent to the backend. Ignored for other decisions.
+        """
         redacted_params = self._redact(parameters) if parameters else {}
         entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -138,29 +145,50 @@ class AuditLogger(BaseAuditLogger):
                 )
                 act_event_id = act_event["event_id"]
 
-                trace_decision = "block" if decision == "blocked" else "allow"
-                policy_event = self._trace_factory.policy_check(
-                    tool_name=tool_name,
-                    params=redacted_params,
-                    duration_ms=duration_ms,
-                    decision=trace_decision,
-                    rule_results=rule_results,
-                    parent_event_id=act_event_id,
-                )
-                self._sync_manager.enqueue(policy_event)
-
-                if decision == "blocked":
-                    trace_event = self._trace_factory.blocked_call(
-                        tool_name=tool_name,
-                        block_type=block_reason or "unknown",
-                        block_message=f"Blocked by {block_reason}",
-                        block_details=block_details,
-                    )
-                    self._sync_manager.enqueue(trace_event)
-                else:
+                if decision == "would_block":
+                    # A10 dry-run (FRD-004/008/017): emit ONE distinct would_block
+                    # marker — NO policy_check(block), NO blocked_call error
+                    # sibling (no error_type), NO violation_reporter. The tool
+                    # ran (forwarded), so the act event is still enqueued.
+                    # FRD-022: a repeat of an already-recorded reason emits no
+                    # further marker (the router latches per reason per session).
+                    if emit_marker:
+                        wb_event = self._trace_factory.would_block(
+                            tool_name=tool_name,
+                            params=redacted_params,
+                            block_type=block_reason or "unknown",
+                            block_details=block_details,
+                            duration_ms=duration_ms,
+                            parent_event_id=act_event_id,
+                        )
+                        self._sync_manager.enqueue(wb_event)
                     if request_id is not None:
                         self._pending_act_events[request_id] = (act_event_id, step_number)
                     self._sync_manager.enqueue(act_event)
+                else:
+                    trace_decision = "block" if decision == "blocked" else "allow"
+                    policy_event = self._trace_factory.policy_check(
+                        tool_name=tool_name,
+                        params=redacted_params,
+                        duration_ms=duration_ms,
+                        decision=trace_decision,
+                        rule_results=rule_results,
+                        parent_event_id=act_event_id,
+                    )
+                    self._sync_manager.enqueue(policy_event)
+
+                    if decision == "blocked":
+                        trace_event = self._trace_factory.blocked_call(
+                            tool_name=tool_name,
+                            block_type=block_reason or "unknown",
+                            block_message=f"Blocked by {block_reason}",
+                            block_details=block_details,
+                        )
+                        self._sync_manager.enqueue(trace_event)
+                    else:
+                        if request_id is not None:
+                            self._pending_act_events[request_id] = (act_event_id, step_number)
+                        self._sync_manager.enqueue(act_event)
             except Exception as e:
                 logger.debug("trace_emission_failed", error=str(e), fail_open=True)
 
