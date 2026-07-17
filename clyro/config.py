@@ -774,9 +774,7 @@ class ReconnectConfig(BaseModel):
     itself, so an operator can retry less, never more (TDD §3 fixed floor).
     """
 
-    max_attempts: int = Field(
-        default=RECONNECT_MAX_ATTEMPTS, ge=0, le=RECONNECT_MAX_ATTEMPTS
-    )
+    max_attempts: int = Field(default=RECONNECT_MAX_ATTEMPTS, ge=0, le=RECONNECT_MAX_ATTEMPTS)
 
 
 class ServerConfig(BaseModel):

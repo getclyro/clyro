@@ -97,12 +97,8 @@ class MessageRouter:
         # end-of-connection is detected by ``receive()`` returning None
         # (_server_reader_task), which settles in-flight calls (FRD-026).
         if isinstance(self._transport, StdioTransport):
-            tasks.append(
-                asyncio.create_task(self._stderr_forwarder_task(), name="stderr_fwd")
-            )
-            tasks.append(
-                asyncio.create_task(self._process_monitor_task(), name="proc_monitor")
-            )
+            tasks.append(asyncio.create_task(self._stderr_forwarder_task(), name="stderr_fwd"))
+            tasks.append(asyncio.create_task(self._process_monitor_task(), name="proc_monitor"))
 
         # Wait for any task to finish (usually process_monitor or host EOF)
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

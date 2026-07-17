@@ -25,7 +25,6 @@ a mock transport; production builds a real pinned-IP client.
 from __future__ import annotations
 
 import asyncio
-import json
 import ssl
 from collections.abc import Callable
 from urllib.parse import urlsplit
@@ -57,6 +56,7 @@ def _tls_cause(exc: BaseException) -> ssl.SSLError | None:
             return cur
         cur = cur.__cause__ or cur.__context__
     return None
+
 
 ClientFactory = Callable[[str | bool], httpx.AsyncClient]
 LifecycleHook = Callable[[str, dict], None]
@@ -114,9 +114,7 @@ class HttpTransport:
         """Validate the target, pin its IP, and build the client (FRD-020/042/057/040)."""
         verdict = self._floor.validate(self._url)
         if not verdict.allowed:
-            raise TransportError(
-                f"target refused by safety floor: {verdict.reason.value}"
-            )
+            raise TransportError(f"target refused by safety floor: {verdict.reason.value}")
         self._pinned_ip = verdict.resolved_ip
         # verify= from TLS policy (FRD-040/046/047); trust_env=False ignores proxy
         # env so the floor's local resolution is authoritative (FRD-057).
@@ -132,9 +130,7 @@ class HttpTransport:
             # FRD-049: no transport-level activity within the liveness bound
             # (read timeout) means the connection is dead. An in-progress call
             # that keeps streaming bytes resets this, so long calls survive.
-            raise TransportError(
-                f"connection unresponsive for {self._liveness_secs}s"
-            ) from exc
+            raise TransportError(f"connection unresponsive for {self._liveness_secs}s") from exc
         except httpx.HTTPError as exc:
             raise TransportError(f"http transport error: {exc}") from exc
 
@@ -196,9 +192,7 @@ class HttpTransport:
     # POST + manual redirect handling (FRD-037/051/052)
     # ------------------------------------------------------------------
 
-    async def _post(
-        self, url: str, data: bytes, *, hop: int, pinned_ip: str | None = None
-    ) -> None:
+    async def _post(self, url: str, data: bytes, *, hop: int, pinned_ip: str | None = None) -> None:
         assert self._client is not None
         if hop > REDIRECT_MAX_HOPS:  # FRD-037
             raise TransportError(f"redirect chain exceeded {REDIRECT_MAX_HOPS} hops")
@@ -287,9 +281,7 @@ class HttpTransport:
                 # cause. Report it clearly and immediately (FRD-040/046/047).
                 tls = _tls_cause(exc)
                 if tls is not None:
-                    raise TransportError(
-                        f"TLS certificate verification failed: {tls}"
-                    ) from exc
+                    raise TransportError(f"TLS certificate verification failed: {tls}") from exc
                 attempt += 1
                 if attempt > self._max_reconnect:
                     raise TransportError(
@@ -304,9 +296,7 @@ class HttpTransport:
         # FRD-052: a redirect destination is a target — re-validate through the floor.
         verdict = self._floor.validate(location, after_redirect=True)
         if not verdict.allowed:
-            raise TransportError(
-                f"redirect target refused by safety floor: {verdict.reason.value}"
-            )
+            raise TransportError(f"redirect target refused by safety floor: {verdict.reason.value}")
         # R-1: pin the hop's just-validated IP so the redirected request connects
         # to exactly what the floor cleared — no re-resolution, no rebinding gap.
         await self._post(location, data, hop=hop + 1, pinned_ip=verdict.resolved_ip)
