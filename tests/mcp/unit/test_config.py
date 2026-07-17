@@ -67,6 +67,92 @@ class TestConfigInvalidValues:
             os.unlink(path)
 
 
+class TestFixedFloorsCannotBeWeakened:
+    """TDD §3 — liveness and reconnect are *fixed floors*, not free knobs.
+
+    Regression: both were exposed as unbounded config values, so an operator
+    could set ``liveness_secs: 99999`` (a dead connection is never detected —
+    FRD-049 void) or ``max_attempts: 1000000`` (a reconnect storm — FRD-056's
+    DoS bound, TDD §12, void). They may now only be tightened.
+    """
+
+    def test_liveness_cannot_exceed_the_guarantee(self) -> None:
+        from pydantic import ValidationError
+
+        from clyro.config import ServerConfig
+
+        with pytest.raises(ValidationError):
+            ServerConfig(liveness_secs=99999)  # would void FRD-049
+
+    def test_liveness_may_be_tightened(self) -> None:
+        from clyro.config import ServerConfig
+
+        assert ServerConfig(liveness_secs=3).liveness_secs == 3  # stricter is fine
+
+    def test_reconnect_cap_cannot_be_raised(self) -> None:
+        from pydantic import ValidationError
+
+        from clyro.config import ReconnectConfig
+
+        with pytest.raises(ValidationError):
+            ReconnectConfig(max_attempts=1000)  # would void FRD-056's DoS bound
+
+    def test_reconnect_cap_may_be_lowered(self) -> None:
+        from clyro.config import ReconnectConfig
+
+        assert ReconnectConfig(max_attempts=2).max_attempts == 2  # fewer is fine
+
+
+class TestConfigErrorsAreExplained:
+    """A bad config must exit(1) WITH a message, never silently (operator UX).
+
+    Regression: load_mcp_config used to ``sys.exit(1)`` with no output on YAML
+    errors, non-dict configs, and validation errors, so an operator with a
+    typo (e.g. transport: htttp) got a silent vanish.
+    """
+
+    def _write(self, text: str) -> str:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(text)
+            return f.name
+
+    def test_invalid_transport_prints_message(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = self._write("transport: htttp\n")
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                load_config(path)
+            assert exc_info.value.code == 1
+            err = capsys.readouterr().err
+            assert "invalid config" in err
+            assert "htttp" in err  # names the actual bad value
+        finally:
+            os.unlink(path)
+
+    def test_malformed_yaml_prints_message(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = self._write("{{invalid yaml: [")
+        try:
+            with pytest.raises(SystemExit):
+                load_config(path)
+            assert "not valid YAML" in capsys.readouterr().err
+        finally:
+            os.unlink(path)
+
+    def test_non_dict_config_prints_message(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = self._write("- just\n- a\n- list\n")
+        try:
+            with pytest.raises(SystemExit):
+                load_config(path)
+            assert "expected a mapping" in capsys.readouterr().err
+        finally:
+            os.unlink(path)
+
+
 class TestConfigUnknownKeys:
     """TDD §11.1 #27 — unknown top-level key → warning, not error."""
 

@@ -97,6 +97,12 @@ class PreventionStack:
         # Step counter increments before evaluation (FRD-005)
         step = session.increment_step()
 
+        # FRD-030: a zero-argument tools/call sends no ``arguments`` member
+        # (arguments is None). Normalise to an empty dict so every downstream
+        # stage receives a dict; a missing-arguments call must be governed, not
+        # crash the session.
+        arguments = arguments or {}
+
         # 1. Loop Detection (FRD-004)
         is_loop, loop_details = self._loop_detector.check(tool_name, arguments)
         if is_loop:

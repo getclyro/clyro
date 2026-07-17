@@ -53,6 +53,9 @@ class AuditLogger(BaseAuditLogger):
         super().__init__(log_path)
         self._redact_patterns = config.redact_parameters
         self._session_id = str(session_id)
+        self._transport = "stdio"  # FRD-032: stamped on every tool_call record
+        self._endpoint: str | None = None  # FRD-044: remote server endpoint (HTTP)
+        self._credential_mask: str | None = None  # FRD-034: known credential value
         self._sync_manager: Any = None  # FRD-015: optional BackendSyncManager
         self._trace_factory: Any = None  # FRD-015: optional TraceEventFactory
         self._pending_session_start: dict[str, Any] | None = None  # Deferred until first tool call
@@ -66,6 +69,40 @@ class AuditLogger(BaseAuditLogger):
         # In-memory accumulators for session summary (terminal output)
         self._violations: list[dict[str, Any]] = []
         self._controls_triggered: list[str] = []
+
+    def set_transport(self, transport: str) -> None:
+        """Record which transport a session used (FRD-032). Default ``stdio``."""
+        self._transport = transport
+
+    def set_endpoint(self, endpoint: str | None) -> None:
+        """Record the remote server endpoint on tool_call records (FRD-044)."""
+        self._endpoint = endpoint or None
+
+    def set_credential_mask(self, credential: str | None) -> None:
+        """Register the known credential value to mask from records (FRD-034)."""
+        self._credential_mask = credential or None
+
+    def _mask_credential(self, obj: Any) -> Any:
+        """Replace the known credential value wherever it appears (FRD-034).
+
+        Value-based masking of the one known secret — in key **and** value
+        positions, at any depth — which the key-based ``redaction`` module
+        cannot do. No-op when no credential is registered.
+        """
+        mask = self._credential_mask
+        if not mask:
+            return obj
+        if isinstance(obj, str):
+            return obj.replace(mask, "[REDACTED]")
+        if isinstance(obj, dict):
+            return {self._mask_credential(k): self._mask_credential(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._mask_credential(v) for v in obj]
+        return obj
+
+    def _write(self, entry: dict[str, Any]) -> None:
+        """Mask the known credential (FRD-034), then write via the base logger."""
+        super()._write(self._mask_credential(entry))
 
     def set_backend(self, sync_manager: Any, trace_factory: Any) -> None:
         """Attach backend sync components for dual-mode emission (FRD-015)."""
@@ -100,6 +137,8 @@ class AuditLogger(BaseAuditLogger):
             "timestamp": datetime.now(UTC).isoformat(),
             "session_id": self._session_id,
             "event": "tool_call",
+            "transport": self._transport,  # FRD-032
+            "endpoint": self._endpoint,  # FRD-044
             "tool_name": tool_name,
             "parameters": redacted_params,
             "decision": decision,
@@ -205,12 +244,22 @@ class AuditLogger(BaseAuditLogger):
         accumulated_cost_usd: float,
         duration_ms: int = 0,
         response_content: str | None = None,
+        unresolved: bool = False,
     ) -> None:
-        """Write a ``tool_call_response`` audit entry with actual cost after server responds."""
+        """Write a ``tool_call_response`` audit entry with actual cost after server responds.
+
+        ``unresolved=True`` marks a call settled without a response (FRD-026): the
+        cost is a pre-call estimate, not a measured round trip. The marker is
+        required so a reviewer can tell a settled-on-drop call apart from one that
+        completed — without it the two records are identical. ``response_content``
+        is deliberately NOT written to the local record (it would put every tool's
+        output in the audit log); it is only forwarded to the trace below.
+        """
         entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(),
             "session_id": self._session_id,
             "event": "tool_call_response",
+            "transport": self._transport,  # FRD-032
             "tool_name": tool_name,
             "request_id": request_id,
             "call_cost_usd": round(call_cost_usd, 8),
@@ -219,6 +268,8 @@ class AuditLogger(BaseAuditLogger):
         }
         if duration_ms:
             entry["duration_ms"] = duration_ms
+        if unresolved:  # FRD-026: settled at estimate, response never arrived
+            entry["unresolved"] = True
         self._write(entry)
 
         # FRD-015: dual-mode emission — enqueue observe-stage trace event for backend sync

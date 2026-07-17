@@ -81,6 +81,10 @@ class TraceEventFactory:
             "_source": "mcp",
             "cost_estimated": True,
         }
+        # FRD-044: the server endpoint rides inside trace metadata (a new
+        # top-level field would be rejected by /v1/traces extra="forbid").
+        if getattr(self._session, "endpoint", None):
+            merged_metadata["endpoint"] = self._session.endpoint
         if truncated:
             merged_metadata["output_truncated"] = True
 

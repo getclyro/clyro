@@ -25,9 +25,10 @@ import time
 
 from clyro.config import WrapperConfig
 from clyro.mcp.audit import AuditLogger
-from clyro.mcp.errors import format_error
+from clyro.mcp.errors import format_error, format_transport_error
 from clyro.mcp.log import get_logger
 from clyro.mcp.prevention import AllowDecision, BlockDecision, PreventionStack
+from clyro.mcp.server_transport import ServerTransport, TransportError
 from clyro.mcp.session import McpSession, PendingCall
 from clyro.mcp.transport import StdioTransport
 
@@ -57,7 +58,7 @@ class MessageRouter:
         self,
         config: WrapperConfig,
         session: McpSession,
-        transport: StdioTransport,
+        transport: ServerTransport,
         prevention: PreventionStack,
         audit: AuditLogger,
     ) -> None:
@@ -69,6 +70,11 @@ class MessageRouter:
         self._pending_requests: dict[str | int, PendingCall] = {}
         self._shutdown_event = asyncio.Event()
         self._first_message_checked = False
+        # Id of a non-tools/call request (e.g. initialize) currently being
+        # forwarded. tools/call ids live in _pending_requests; this covers the
+        # passthrough-request case so a mid-exchange transport failure can still
+        # answer that id (FRD-020). Set around the forward, cleared on success.
+        self._inflight_host_id: str | int | None = None
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -81,12 +87,22 @@ class MessageRouter:
         Returns:
             Exit code (0 normal, 2 server crash, 3 zombie).
         """
+        # host/server readers are transport-blind (they use send/receive).
         tasks = [
             asyncio.create_task(self._host_reader_task(), name="host_reader"),
             asyncio.create_task(self._server_reader_task(), name="server_reader"),
-            asyncio.create_task(self._stderr_forwarder_task(), name="stderr_fwd"),
-            asyncio.create_task(self._process_monitor_task(), name="proc_monitor"),
         ]
+        # stderr forwarding and child-exit monitoring are stdio-only (an HTTP
+        # connection has neither a child stderr nor a process). The HTTP leg's
+        # end-of-connection is detected by ``receive()`` returning None
+        # (_server_reader_task), which settles in-flight calls (FRD-026).
+        if isinstance(self._transport, StdioTransport):
+            tasks.append(
+                asyncio.create_task(self._stderr_forwarder_task(), name="stderr_fwd")
+            )
+            tasks.append(
+                asyncio.create_task(self._process_monitor_task(), name="proc_monitor")
+            )
 
         # Wait for any task to finish (usually process_monitor or host EOF)
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -99,6 +115,15 @@ class MessageRouter:
                 await t
             except asyncio.CancelledError:
                 pass
+
+        # FRD-026 / AC-4.2 / AC-4.3: settle anything STILL in flight as the
+        # session ends. The connection-lost and transport-error paths already
+        # settle, but a *normal* shutdown (host closed stdin) reaches neither —
+        # a call sent but never answered would otherwise vanish: charged zero
+        # (a silent under-count, the D9 violation) with its outcome absent from
+        # the audit. No-ops when nothing is outstanding, so it is safe here for
+        # every exit path.
+        self._settle_pending()
 
         # Determine exit code from the completed task
         for t in done:
@@ -158,9 +183,13 @@ class MessageRouter:
                 )
                 self._audit.log_parse_error(line[:200])
                 try:
-                    await self._transport.write_to_child(line)
+                    await self._transport.send(line)
                 except BrokenPipeError:
                     self._shutdown_event.set()
+                    return
+                except TransportError as exc:
+                    # FRD-020/031: HTTP send lost the connection — tell the host.
+                    self._fail_pending_transport(str(exc))
                     return
                 continue
 
@@ -170,6 +199,14 @@ class MessageRouter:
                 # MEDIUM-3 fix: child died — trigger clean shutdown
                 self._shutdown_event.set()
                 return
+            except TransportError as exc:
+                # FRD-020/031: an HTTP send() failed mid-exchange. stdio signals
+                # this via BrokenPipeError above; the HTTP transport raises
+                # TransportError, which nothing else would catch — leaving the
+                # host hung on the in-flight tools/call id. Surface it as a
+                # transport error to the host and end the session.
+                self._fail_pending_transport(str(exc))
+                return
 
     async def _handle_host_message(self, raw: bytes) -> None:
         """Parse and route a single host message."""
@@ -178,26 +215,30 @@ class MessageRouter:
         except (json.JSONDecodeError, UnicodeDecodeError):
             # Malformed JSON — log and forward raw (FRD-001)
             self._audit.log_parse_error(raw)
-            await self._transport.write_to_child(raw)
+            await self._transport.send(raw)
             return
 
         # Batch JSON-RPC (array) — passthrough as-is.
         # Checked before dict-specific checks to avoid type errors.
         if isinstance(msg, list):
             logger.warning("jsonrpc_batch_unsupported", action="forwarding_raw")
-            await self._transport.write_to_child(raw)
+            await self._transport.send(raw)
             return
 
         # Notifications (no id) — always passthrough
         if "id" not in msg:
-            await self._transport.write_to_child(raw)
+            await self._transport.send(raw)
             return
 
         method = msg.get("method", "")
 
         # Only govern tools/call
         if method != "tools/call":
-            await self._transport.write_to_child(raw)
+            # Passthrough request (e.g. initialize): remember its id so a send
+            # that fails mid-exchange can answer it with a transport error too.
+            self._inflight_host_id = msg.get("id")
+            await self._transport.send(raw)
+            self._inflight_host_id = None
             return
 
         # Extract tool name and arguments
@@ -206,12 +247,22 @@ class MessageRouter:
         arguments = params.get("arguments")
         request_id = msg.get("id")
 
+        # FRD-048 critical section: assign-step + evaluate-against-counters +
+        # update-counters run atomically inside PreventionStack.evaluate, which
+        # is synchronous (no await). Because this router has exactly one host
+        # reader task, that whole govern step is serialized — concurrent host
+        # calls cannot read a stale counter. The network round-trip below (the
+        # awaited send) is the only concurrent part and holds no counter state.
         start = time.monotonic()
         decision = self._prevention.evaluate(tool_name, arguments, self._session)
         duration_ms = int((time.monotonic() - start) * 1000)
 
         if isinstance(decision, AllowDecision):
-            # Forward to server
+            # Forward to server. Record the allow decision and register the
+            # pending call *before* the send, so a send that fails mid-exchange
+            # (FRD-020) still leaves a coherent audit trail: the allowed record
+            # plus the "[unresolved: connection lost]" response from settle,
+            # rather than a response with no matching call.
             params_json = json.dumps(arguments or {}, default=str)
             self._pending_requests[request_id] = PendingCall(
                 request_id=request_id,
@@ -219,7 +270,6 @@ class MessageRouter:
                 params_json_len=len(params_json),
                 forwarded_at=time.monotonic(),
             )
-            await self._transport.write_to_child(raw)
             self._audit.log_tool_call(
                 tool_name=tool_name,
                 parameters=arguments,
@@ -230,6 +280,7 @@ class MessageRouter:
                 rule_results=decision.rule_results or None,
                 request_id=request_id,
             )
+            await self._transport.send(raw)
         else:
             # Block — send error to host, never forward to server
             assert isinstance(decision, BlockDecision)
@@ -250,6 +301,66 @@ class MessageRouter:
                 rule_results=block_rule_results,
             )
 
+    def _fail_pending_transport(self, reason: str) -> None:
+        """Report a transport failure to the host and end the session.
+
+        The host path's ``send()`` raising a ``TransportError`` means the
+        downstream connection was lost mid-exchange. Unlike stdio (which
+        signals this with ``BrokenPipeError`` and settles via the server
+        reader's ``receive()==None`` path), an HTTP ``send()`` failure surfaces
+        as a ``TransportError`` that no reader would otherwise catch — leaving
+        the host waiting forever on an in-flight ``tools/call`` id.
+
+        For each in-flight request we write a JSON-RPC **transport** error to
+        the host, distinguishable from a governance block (FRD-020, FRD-031),
+        then settle those calls' cost (FRD-026/045 — never re-sent) and end the
+        session so the wrapper does not exit silently.
+        """
+        ids: list[str | int] = list(self._pending_requests)
+        # A passthrough request (initialize, etc.) in flight is not tracked in
+        # _pending_requests but still awaits a response — include its id.
+        if (
+            self._inflight_host_id is not None
+            and self._inflight_host_id not in self._pending_requests
+        ):
+            ids.append(self._inflight_host_id)
+        for req_id in ids:
+            error_line = format_transport_error(req_id, reason)
+            sys.stdout.buffer.write(error_line.encode("utf-8"))
+        sys.stdout.buffer.flush()
+        # Audit + charge the tracked tool calls as unresolved, then shut down.
+        self._settle_pending()
+        self._inflight_host_id = None
+        self._shutdown_event.set()
+
+    def _settle_pending(self) -> None:
+        """Settle in-flight calls when the connection is lost (FRD-026/045).
+
+        Each unresolved call is charged a pre-call estimate from its already-
+        captured request length (reuses the existing cost accumulator — no new
+        methodology, scope §3) so a dropped call is never counted as zero
+        (D9). Calls are never re-sent (FRD-045); they are settled and audited
+        as unresolved.
+        """
+        if not self._pending_requests:
+            return
+        for req_id, pending in list(self._pending_requests.items()):
+            # Pre-call estimate: request length on both sides (response unknown).
+            est = self._prevention.cost_tracker.accumulate(
+                pending.params_json_len, pending.params_json_len
+            )
+            self._session.add_cost(est)
+            self._audit.log_tool_call_response(
+                tool_name=pending.tool_name,
+                request_id=pending.request_id,
+                call_cost_usd=est,
+                accumulated_cost_usd=self._session.accumulated_cost_usd,
+                duration_ms=0,
+                response_content="[unresolved: connection lost]",
+                unresolved=True,  # FRD-026: recorded as unresolved, not as a completed call
+            )
+            self._pending_requests.pop(req_id, None)
+
     # ------------------------------------------------------------------
     # Server -> Host (with cost correlation)
     # ------------------------------------------------------------------
@@ -257,9 +368,11 @@ class MessageRouter:
     async def _server_reader_task(self) -> None:
         """Read server stdout, correlate responses, forward to host."""
         while not self._shutdown_event.is_set():
-            line = await self._transport.read_line_from_child()
+            line = await self._transport.receive()
             if not line:
-                # Server closed stdout
+                # Connection ended (child stdout EOF, or HTTP connection lost).
+                # Settle any in-flight calls before shutting down (FRD-026/045).
+                self._settle_pending()
                 self._shutdown_event.set()
                 return
 
@@ -272,7 +385,12 @@ class MessageRouter:
             try:
                 msg = json.loads(line)
                 resp_id = msg.get("id")
-                # A response has 'id' but no 'method'
+                # A response has 'id' but no 'method'. A server-initiated request
+                # has BOTH id and method — it is not a response, so it falls
+                # through to the passthrough below and is delivered to the host
+                # (FRD-027); the host's reply returns via the host reader and is
+                # forwarded to the server (FRD-028). An uncorrelatable response
+                # (id not in pending) skips the cost block below (FRD-053).
                 is_response = resp_id is not None and "method" not in msg
                 if is_response and resp_id in self._pending_requests:
                     pending = self._pending_requests.pop(resp_id)

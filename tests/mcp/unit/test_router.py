@@ -32,7 +32,7 @@ def _make_router(
     config = WrapperConfig(default_action="allow")
     session = McpSession()
     transport = MagicMock(spec=StdioTransport)
-    transport.write_to_child = AsyncMock()
+    transport.send = AsyncMock()
     prevention = MagicMock(spec=PreventionStack)
     if prevention_result is not None:
         prevention.evaluate.return_value = prevention_result
@@ -99,7 +99,7 @@ class TestHandleHostMessage:
         raw = json.dumps(msg).encode() + b"\n"
         await router._handle_host_message(raw)
 
-        transport.write_to_child.assert_awaited_once_with(raw)
+        transport.send.assert_awaited_once_with(raw)
         prevention.evaluate.assert_not_called()
         audit.log_tool_call.assert_not_called()
 
@@ -111,7 +111,7 @@ class TestHandleHostMessage:
         raw = json.dumps(msg).encode() + b"\n"
         await router._handle_host_message(raw)
 
-        transport.write_to_child.assert_awaited_once_with(raw)
+        transport.send.assert_awaited_once_with(raw)
         prevention.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -122,7 +122,7 @@ class TestHandleHostMessage:
         await router._handle_host_message(raw)
 
         audit.log_parse_error.assert_called_once_with(raw)
-        transport.write_to_child.assert_awaited_once_with(raw)
+        transport.send.assert_awaited_once_with(raw)
         prevention.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -136,7 +136,7 @@ class TestHandleHostMessage:
         raw = json.dumps(batch).encode() + b"\n"
         await router._handle_host_message(raw)
 
-        transport.write_to_child.assert_awaited_once_with(raw)
+        transport.send.assert_awaited_once_with(raw)
         prevention.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -156,7 +156,7 @@ class TestHandleHostMessage:
             mock_sys.stdout.buffer = MagicMock()
             await router._handle_host_message(raw)
 
-        transport.write_to_child.assert_awaited_once_with(raw)
+        transport.send.assert_awaited_once_with(raw)
         audit.log_tool_call.assert_called_once()
         call_kwargs = audit.log_tool_call.call_args
         assert call_kwargs.kwargs["decision"] == "allowed"
@@ -186,7 +186,7 @@ class TestHandleHostMessage:
             await router._handle_host_message(raw)
 
         # Server should NOT receive the message
-        transport.write_to_child.assert_not_awaited()
+        transport.send.assert_not_awaited()
         # Error response should be written to stdout
         mock_buf.write.assert_called_once()
         written = mock_buf.write.call_args[0][0]
