@@ -25,8 +25,10 @@ The static :class:`CredentialProvider`:
 
 from __future__ import annotations
 
+import ipaddress
 from enum import Enum
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 from clyro.mcp.log import get_logger
 
@@ -63,8 +65,21 @@ class AuthProvider(Protocol):
         ...
 
 
-def _is_loopback_host(host: str) -> bool:
-    return host in ("127.0.0.1", "::1", "localhost")
+def _is_loopback_origin(origin: str) -> bool:
+    """True if *origin* points at this machine (FRD-055 / AC-8.7 exemption).
+
+    Parsed with ``urlsplit`` rather than string-splitting on ``:`` — the naive
+    form yields ``'['`` for ``http://[::1]:9000`` and so refuses the credential
+    on IPv6 loopback. The whole of ``127.0.0.0/8`` is loopback, not just
+    ``127.0.0.1``, so the check is by address, not by literal.
+    """
+    host = urlsplit(origin).hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class CredentialProvider:
@@ -104,8 +119,7 @@ class CredentialProvider:
 
         # FRD-055: never send the credential over an unencrypted, non-loopback
         # connection. Loopback is exempt — nothing is on a wire.
-        host = target_origin.split("://", 1)[-1].split(":", 1)[0]
-        if not encrypted and not _is_loopback_host(host):
+        if not encrypted and not _is_loopback_origin(target_origin):
             logger.warning("cred_refused_plaintext", target=target_origin)
             return AttachOutcome.REFUSED
 

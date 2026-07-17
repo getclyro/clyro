@@ -28,7 +28,7 @@ from clyro.mcp.audit import AuditLogger
 from clyro.mcp.errors import format_error, format_transport_error
 from clyro.mcp.log import get_logger
 from clyro.mcp.prevention import AllowDecision, BlockDecision, PreventionStack
-from clyro.mcp.server_transport import ServerTransport, TransportError
+from clyro.mcp.server_transport import ServerTransport, SessionExpired, TransportError
 from clyro.mcp.session import McpSession, PendingCall
 from clyro.mcp.transport import StdioTransport
 
@@ -195,6 +195,14 @@ class MessageRouter:
                 # MEDIUM-3 fix: child died — trigger clean shutdown
                 self._shutdown_event.set()
                 return
+            except SessionExpired as exc:
+                # FRD-025: the server forgot our session and the transport could
+                # not re-establish it. The CONNECTION is still healthy, so ending
+                # the host's session here would turn a recoverable hiccup into a
+                # disconnect (R-C2). Fail only the in-flight call and keep serving
+                # — the host's own re-initialize can still recover the session.
+                self._fail_pending_transport(str(exc))
+                continue
             except TransportError as exc:
                 # FRD-020/031: an HTTP send() failed mid-exchange. stdio signals
                 # this via BrokenPipeError above; the HTTP transport raises
@@ -260,6 +268,19 @@ class MessageRouter:
             # plus the "[unresolved: connection lost]" response from settle,
             # rather than a response with no matching call.
             params_json = json.dumps(arguments or {}, default=str)
+            # V-24 / D19: an id colliding with an outstanding call must NOT
+            # silently discard the earlier entry's accounting. That call was
+            # already forwarded and executed; a blind overwrite destroys only its
+            # cost record, so N calls run while 1 is billed and the FRD-006 budget
+            # cap can never fire. Settle the displaced call at its pre-call
+            # estimate first — it is never re-sent (FRD-045), only accounted for.
+            if request_id in self._pending_requests:
+                logger.warning(
+                    "outstanding_id_collision",
+                    request_id=request_id,
+                    hint="settling the displaced call; host reused an in-flight id",
+                )
+                self._settle_one(request_id)
             self._pending_requests[request_id] = PendingCall(
                 request_id=request_id,
                 tool_name=tool_name,
@@ -338,24 +359,38 @@ class MessageRouter:
         (D9). Calls are never re-sent (FRD-045); they are settled and audited
         as unresolved.
         """
-        if not self._pending_requests:
+        for req_id in list(self._pending_requests):
+            self._settle_one(req_id)
+
+    def _settle_one(self, req_id: str | int) -> None:
+        """Settle a single in-flight call at its pre-call estimate (FRD-026/D17).
+
+        Charged at the request-side estimate, recorded as unresolved, and never
+        re-sent (FRD-045). Used both when the session ends with calls in flight
+        and when an outstanding id is displaced by a collision (V-24).
+        """
+        pending = self._pending_requests.pop(req_id, None)
+        if pending is None:
             return
-        for req_id, pending in list(self._pending_requests.items()):
-            # Pre-call estimate: request length on both sides (response unknown).
-            est = self._prevention.cost_tracker.accumulate(
-                pending.params_json_len, pending.params_json_len
-            )
-            self._session.add_cost(est)
-            self._audit.log_tool_call_response(
-                tool_name=pending.tool_name,
-                request_id=pending.request_id,
-                call_cost_usd=est,
-                accumulated_cost_usd=self._session.accumulated_cost_usd,
-                duration_ms=0,
-                response_content="[unresolved: connection lost]",
-                unresolved=True,  # FRD-026: recorded as unresolved, not as a completed call
-            )
-            self._pending_requests.pop(req_id, None)
+        # Pre-call estimate: request length on both sides (response unknown).
+        est = self._prevention.cost_tracker.accumulate(
+            pending.params_json_len, pending.params_json_len
+        )
+        self._session.add_cost(est)
+        self._audit.log_tool_call_response(
+            tool_name=pending.tool_name,
+            request_id=pending.request_id,
+            call_cost_usd=est,
+            accumulated_cost_usd=self._session.accumulated_cost_usd,
+            duration_ms=0,
+            # State the fact, never a cause. Settlement runs on every exit —
+            # including a clean shutdown with a call still in flight, where
+            # nothing was "lost". Asserting a cause we did not observe put a
+            # false diagnosis in the backend trace and pointed operators at the
+            # network for a wrapper-side outcome.
+            response_content="[unresolved: no response received]",
+            unresolved=True,  # FRD-026: recorded as unresolved, not as a completed call
+        )
 
     # ------------------------------------------------------------------
     # Server -> Host (with cost correlation)

@@ -785,8 +785,20 @@ class ServerConfig(BaseModel):
     """
 
     url: str | None = Field(default=None, description="Remote target (required for http)")
+    auth_header: str = Field(
+        default="Authorization",
+        description=(
+            "Which header in `headers` carries the credential (FRD-033). The "
+            "credential is governed by the FRD-051/055 rules and masked from "
+            "records (FRD-034); naming it here is what makes both possible."
+        ),
+    )
     headers: dict[str, str] = Field(
-        default_factory=dict, description="Static auth / extra headers (FRD-033)"
+        default_factory=dict,
+        description=(
+            "Static auth header (FRD-033). Only `auth_header` is sent — any other "
+            "key is rejected at load rather than dropped silently."
+        ),
     )
     ca_bundle: str | None = Field(default=None, description="Custom CA bundle path (FRD-046)")
     allow_plaintext: bool = Field(
@@ -803,6 +815,23 @@ class ServerConfig(BaseModel):
         ),
     )
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
+
+    @model_validator(mode="after")
+    def _only_the_auth_header_is_supported(self) -> ServerConfig:
+        """Reject headers the transport would silently drop.
+
+        Only ``auth_header`` is carried onto requests. A header configured under
+        any other key used to be dropped *and* left unmasked in the audit log —
+        a silent double failure. Refusing at load makes that impossible.
+        """
+        unsupported = sorted(k for k in self.headers if k.lower() != self.auth_header.lower())
+        if unsupported:
+            raise ValueError(
+                f"server.headers only carries the credential header "
+                f"({self.auth_header!r}); unsupported: {unsupported}. Set "
+                f"server.auth_header if your credential uses a different header."
+            )
+        return self
 
 
 class WrapperConfig(BaseModel):

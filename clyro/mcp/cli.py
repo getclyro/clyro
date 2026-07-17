@@ -295,7 +295,13 @@ def _build_transport(config, server_command: list[str]):
     try:
         floor = SafetyFloor(allow_plaintext=config.server.allow_plaintext)
         tls = TlsPolicy(config.server.ca_bundle)
-        auth = CredentialProvider(config.server.headers.get("Authorization"))
+        # FRD-033/034: the credential may live under any header the operator
+        # names. Hardcoding "Authorization" here meant a credential configured
+        # elsewhere was silently unsent AND left unmasked in records (S2).
+        auth = CredentialProvider(
+            config.server.headers.get(config.server.auth_header),
+            header_name=config.server.auth_header,
+        )
         transport = HttpTransport(
             sel.url,
             floor=floor,
@@ -363,10 +369,12 @@ async def _async_main(
     transport, transport_label = _build_transport(config, server_command)
     prevention = PreventionStack(config)
     audit = AuditLogger(config.audit, session.session_id)
-    audit.set_transport(transport_label)  # FRD-032
+    audit.set_transport(transport_label)  # FRD-032 (audit records)
+    session.transport = transport_label  # FRD-032 (trace records, via metadata)
     if transport_label == "http":
-        # FRD-034: mask the known credential value from any emitted record.
-        audit.set_credential_mask(config.server.headers.get("Authorization"))
+        # FRD-034: mask the known credential value from any emitted record —
+        # whichever header the operator configured it under (S2).
+        audit.set_credential_mask(config.server.headers.get(config.server.auth_header))
         # FRD-044: record the endpoint (audit records + trace metadata via session).
         audit.set_endpoint(config.server.url)
         session.endpoint = config.server.url

@@ -81,6 +81,13 @@ class TraceEventFactory:
             "_source": "mcp",
             "cost_estimated": True,
         }
+        # FRD-032: the transport rides in trace metadata for the same reason as
+        # the endpoint below — /v1/traces is extra="forbid", so a new top-level
+        # field would 422. FRD-032 requires the transport on "every audit record
+        # AND every trace record"; stamping only the audit half left a trace a
+        # reviewer cannot attribute to a transport (AC-7.6).
+        if getattr(self._session, "transport", None):
+            merged_metadata["transport"] = self._session.transport
         # FRD-044: the server endpoint rides inside trace metadata (a new
         # top-level field would be rejected by /v1/traces extra="forbid").
         if getattr(self._session, "endpoint", None):

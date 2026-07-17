@@ -50,8 +50,24 @@ _CLOUD_METADATA_IPS = frozenset(
     {
         ipaddress.ip_address("169.254.169.254"),  # AWS / GCP / Azure IMDS (IPv4)
         ipaddress.ip_address("fd00:ec2::254"),  # AWS IMDS (IPv6)
+        ipaddress.ip_address("192.0.0.192"),  # Oracle Cloud IMDS
+        ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud IMDS
     }
 )
+
+# FRD-035: NAT64 (RFC 6052) embeds an IPv4 address in an IPv6 one, so
+# 64:ff9b::a9fe:a9fe reaches 169.254.169.254 in a NAT64 environment. Neither the
+# metadata set nor is_link_local catches that form, so the prefix is matched and
+# its embedded IPv4 re-checked below.
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress._BaseAddress) -> ipaddress.IPv4Address | None:
+    """Return the IPv4 address embedded in a NAT64 address, if any (RFC 6052)."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_PREFIX:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
+
 
 # A resolver maps a hostname to a list of IP strings. Injectable for hermetic tests.
 Resolver = Callable[[str], list[str]]
@@ -158,13 +174,23 @@ class SafetyFloor:
         # whole target (defeats a multi-A DNS-rebinding trick).
         for ip_str in ips:
             ip = ipaddress.ip_address(ip_str)
+            # FRD-035: a NAT64 address carries an IPv4 target inside it — check
+            # the embedded address too, or 64:ff9b::a9fe:a9fe reaches the
+            # metadata endpoint while matching none of the tests below.
+            embedded = _embedded_ipv4(ip)
+            if embedded is not None and (embedded in _CLOUD_METADATA_IPS or embedded.is_link_local):
+                logger.warning("floor_refuse", reason="metadata", host=host, ip=ip_str)
+                return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.METADATA, ip_str, host)
             if ip in _CLOUD_METADATA_IPS:  # FRD-035
                 logger.warning("floor_refuse", reason="metadata", host=host, ip=ip_str)
                 return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.METADATA, ip_str, host)
             if ip.is_link_local:  # FRD-036
                 logger.warning("floor_refuse", reason="link_local", host=host, ip=ip_str)
                 return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.LINK_LOCAL, ip_str, host)
-            if ip.is_loopback and not self._allow_plaintext:  # FRD-039 (loopback arm)
+            # FRD-039 (loopback arm). ``is_unspecified`` (0.0.0.0, ::) is NOT
+            # is_loopback, yet 0.0.0.0 routes to localhost on Linux — so without
+            # this it slips the gate the relaxation is meant to control.
+            if (ip.is_loopback or ip.is_unspecified) and not self._allow_plaintext:
                 return SafetyVerdict(
                     FloorOutcome.REFUSE, FloorReason.LOOPBACK_DISALLOWED, ip_str, host
                 )

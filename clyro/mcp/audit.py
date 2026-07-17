@@ -104,6 +104,20 @@ class AuditLogger(BaseAuditLogger):
         """Mask the known credential (FRD-034), then write via the base logger."""
         super()._write(self._mask_credential(entry))
 
+    def _enqueue_trace(self, event: dict[str, Any]) -> None:
+        """Mask the known credential (FRD-034), then enqueue for backend sync.
+
+        Every trace enqueue routes through here. ``_write`` covers the local
+        JSONL, but trace events travel **off-host** to the Clyro backend — the
+        worse direction — and no downstream stage re-masks. Masking only in
+        ``_write`` left that half of FRD-034/V-19 open: the key-based
+        ``redact_parameters`` defaults to ``[]``, so a credential appearing in a
+        tool argument or an echoed 401 body reached the backend verbatim.
+        """
+        if self._sync_manager is None:
+            return
+        self._sync_manager.enqueue(self._mask_credential(event))
+
     def set_backend(self, sync_manager: Any, trace_factory: Any) -> None:
         """Attach backend sync components for dual-mode emission (FRD-015)."""
         self._sync_manager = sync_manager
@@ -186,7 +200,7 @@ class AuditLogger(BaseAuditLogger):
                     rule_results=rule_results,
                     parent_event_id=act_event_id,
                 )
-                self._sync_manager.enqueue(policy_event)
+                self._enqueue_trace(policy_event)
 
                 if decision == "blocked":
                     trace_event = self._trace_factory.blocked_call(
@@ -195,11 +209,11 @@ class AuditLogger(BaseAuditLogger):
                         block_message=f"Blocked by {block_reason}",
                         block_details=block_details,
                     )
-                    self._sync_manager.enqueue(trace_event)
+                    self._enqueue_trace(trace_event)
                 else:
                     if request_id is not None:
                         self._pending_act_events[request_id] = (act_event_id, step_number)
-                    self._sync_manager.enqueue(act_event)
+                    self._enqueue_trace(act_event)
             except Exception as e:
                 logger.debug("trace_emission_failed", error=str(e), fail_open=True)
 
@@ -286,7 +300,7 @@ class AuditLogger(BaseAuditLogger):
                     parent_event_id=parent_eid,
                     step_number=act_step,
                 )
-                self._sync_manager.enqueue(trace_event)
+                self._enqueue_trace(trace_event)
             except Exception as e:
                 logger.debug("trace_emission_failed", error=str(e), fail_open=True)
 
@@ -318,7 +332,7 @@ class AuditLogger(BaseAuditLogger):
                 elif event == "session_end":
                     if self._backend_session_started:
                         trace_event = self._trace_factory.session_end()
-                        self._sync_manager.enqueue(trace_event)
+                        self._enqueue_trace(trace_event)
                 elif event == "server_exited":
                     if self._backend_session_started:
                         trace_event = self._trace_factory.create_trace_event(
@@ -326,7 +340,7 @@ class AuditLogger(BaseAuditLogger):
                             None,
                             metadata={"reason": "server_exited", **(extra or {})},
                         )
-                        self._sync_manager.enqueue(trace_event)
+                        self._enqueue_trace(trace_event)
             except Exception as e:
                 logger.debug("trace_emission_failed", event=event, error=str(e), fail_open=True)
 
@@ -343,7 +357,7 @@ class AuditLogger(BaseAuditLogger):
     def _flush_pending_session_start(self) -> None:
         """Send deferred session_start to backend on first tool activity."""
         if self._pending_session_start and self._sync_manager:
-            self._sync_manager.enqueue(self._pending_session_start)
+            self._enqueue_trace(self._pending_session_start)
             self._pending_session_start = None
             self._backend_session_started = True
 

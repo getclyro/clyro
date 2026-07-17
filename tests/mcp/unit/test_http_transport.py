@@ -11,11 +11,13 @@ resolver backs the SafetyFloor, so everything is hermetic.
 
 from __future__ import annotations
 
+import socket
+
 import httpx
 import pytest
 
 from clyro.mcp.auth import CredentialProvider
-from clyro.mcp.http_transport import HttpTransport
+from clyro.mcp.http_transport import HttpTransport, _keepalive_socket_options
 from clyro.mcp.safety import SafetyFloor
 from clyro.mcp.server_transport import ServerTransport, TransportError
 from clyro.mcp.tls import TlsPolicy
@@ -33,9 +35,7 @@ def _floor() -> SafetyFloor:
 
 def _make(url: str, handler, *, token: str | None = "Bearer T", floor: SafetyFloor | None = None):
     def factory(verify):
-        return httpx.AsyncClient(
-            transport=httpx.MockTransport(handler), follow_redirects=False
-        )
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
 
     return HttpTransport(
         url,
@@ -179,20 +179,36 @@ async def test_close_makes_receive_return_none_and_not_live() -> None:
 
 
 @pytest.mark.asyncio
-async def test_liveness_secs_sets_read_timeout() -> None:
-    # FRD-049: liveness_secs is the transport read-timeout (no longer a dead param).
+async def test_liveness_secs_drives_keepalive_not_a_read_deadline() -> None:
+    # FRD-049 asks "is the connection alive?", NOT "is the server talking?".
+    #
+    # This test previously asserted `timeout.read == liveness_secs` and cited
+    # FRD-049 while doing so — pinning the very mechanism FRD-049 forbids. A read
+    # deadline kills a silent in-progress call, which the FRD's failure clause
+    # explicitly disallows however long the call runs. Liveness is a TCP property
+    # (D15), so assert the guarantee, not the old plumbing.
     t = HttpTransport(
-        "https://srv/mcp", floor=_floor(), tls=TlsPolicy(),
-        auth=CredentialProvider(None), liveness_secs=7,
+        "https://srv/mcp",
+        floor=_floor(),
+        tls=TlsPolicy(),
+        auth=CredentialProvider(None),
+        liveness_secs=8,
     )
     await t.open()
-    assert t._client.timeout.read == 7
+    assert t._client.timeout.read is None  # nothing may bound a read
+    opts = {name: val for _, name, val in _keepalive_socket_options(8)}
+    assert opts[socket.SO_KEEPALIVE] == 1
+    assert (
+        opts[socket.TCP_KEEPIDLE] + opts[socket.TCP_KEEPINTVL] * opts[socket.TCP_KEEPCNT]
+    ) == 8  # a dead peer is still detected within the bound
     await t.close()
 
 
 @pytest.mark.asyncio
-async def test_read_timeout_becomes_transport_error() -> None:
-    # FRD-049: an unresponsive transport surfaces as a TransportError, not a hang.
+async def test_timeout_becomes_transport_error() -> None:
+    # Reads are unbounded (FRD-049), so a timeout here can only be connect/write/
+    # pool — but whatever its origin, a timeout must leave the seam as a
+    # TransportError rather than a hang or a stray httpx type (FRD-031).
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("no bytes", request=request)
 
@@ -231,9 +247,7 @@ async def test_tls_error_reported_clearly_and_not_retried() -> None:
 async def test_sse_framed_response_enqueued() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = 'data: {"jsonrpc":"2.0","id":1,"result":"streamed"}\n\n'
-        return httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, content=body
-        )
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
 
     t = _make("https://srv/mcp", handler)
     await t.open()

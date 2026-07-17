@@ -32,6 +32,7 @@ class McpSession:
     agent_id: UUID | None = None  # FRD-016: set by AgentRegistrar on backend-enabled sessions
     agent_name: str | None = None  # FRD-016: set during backend init for trace metadata
     endpoint: str | None = None  # FRD-044: remote server endpoint (HTTP), rides in trace metadata
+    transport: str | None = None  # FRD-032: stamped on trace records as well as audit records
 
     def increment_step(self) -> int:
         """Increment and return the new step count."""

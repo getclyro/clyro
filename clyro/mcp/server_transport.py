@@ -28,6 +28,20 @@ class TransportError(Exception):
 
     Distinct by type from any governance decision so the router never reports a
     transport failure as a policy block (FRD-031).
+
+    Raising this ends the host's session: the caller treats it as "the server is
+    unreachable". If the connection is in fact fine, raise :class:`SessionExpired`.
+    """
+
+
+class SessionExpired(TransportError):
+    """The server no longer recognises our session, but is otherwise reachable.
+
+    A restarted or aged-out server answers 404 (FRD-025). That is recoverable —
+    the transport re-runs the host's handshake — and only reaches the router when
+    recovery itself failed. It is a subclass so existing ``except TransportError``
+    handlers stay correct by default; the router distinguishes it to fail the one
+    in-flight call instead of ending a session whose connection is still healthy.
     """
 
 

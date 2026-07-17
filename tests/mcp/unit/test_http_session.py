@@ -30,12 +30,17 @@ class _StatefulServer:
         self.session_id = "sess-abc123"
         self.initialized = False
         self.seen_session_headers: list[str | None] = []
+        # (http_method, mcp_method, session_id) per request. The session id must be
+        # echoed on the server->client GET too (TDD §4.2), not only on POSTs, so the
+        # HTTP method has to be recorded to tell them apart.
+        self.seen_requests: list[tuple[str, str | None, str | None]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content or b"{}")
         method = body.get("method")
         sid = request.headers.get("mcp-session-id")
         self.seen_session_headers.append(sid)
+        self.seen_requests.append((request.method, method, sid))
 
         if method == "initialize":
             self.initialized = True
@@ -68,7 +73,10 @@ def _transport(server: _StatefulServer) -> HttpTransport:
         return httpx.AsyncClient(transport=httpx.MockTransport(server), follow_redirects=False)
 
     return HttpTransport(
-        "https://srv/mcp", floor=floor, tls=TlsPolicy(), auth=CredentialProvider(None),
+        "https://srv/mcp",
+        floor=floor,
+        tls=TlsPolicy(),
+        auth=CredentialProvider(None),
         client_factory=factory,
     )
 
@@ -93,7 +101,19 @@ async def test_session_id_captured_and_echoed() -> None:
     assert call_reply["result"]["ran"] == "tools/call"  # not "Server not initialized"
 
     # The server saw: no id on initialize, then the assigned id on the call.
-    assert server.seen_session_headers == [None, "sess-abc123"]
+    #
+    # Assert the POSTs specifically. The previous form compared the whole request
+    # list and so also captured the server->client GET — which passed only because
+    # the GET happened to open after this line. Once the body drain moved to the
+    # background (B3) the GET opens promptly, as TDD §4.2 intends, and the exact
+    # list changed. The requirement never did.
+    posts = [(m, sid) for http_method, m, sid in server.seen_requests if http_method == "POST"]
+    assert posts == [("initialize", None), ("tools/call", "sess-abc123")]
+
+    # TDD §4.2: the session id must be echoed on the server->client GET as well —
+    # a stateful server rejects an unidentified stream. Nothing pinned this before.
+    gets = [(m, sid) for http_method, m, sid in server.seen_requests if http_method == "GET"]
+    assert gets == [(None, "sess-abc123")]
     await t.close()
 
 
