@@ -118,9 +118,7 @@ class SafetyFloor:
     :meth:`validate` per hop with ``after_redirect=True``).
     """
 
-    def __init__(
-        self, *, allow_plaintext: bool = False, resolver: Resolver | None = None
-    ) -> None:
+    def __init__(self, *, allow_plaintext: bool = False, resolver: Resolver | None = None) -> None:
         self._allow_plaintext = allow_plaintext
         self._resolver = resolver or _default_resolver
 
@@ -141,9 +139,7 @@ class SafetyFloor:
         # enabled the single relaxation. Loopback is handled after resolution.
         if scheme == "http" and not self._allow_plaintext:
             logger.warning("floor_refuse", reason="plaintext_disallowed", host=host)
-            return SafetyVerdict(
-                FloorOutcome.REFUSE, FloorReason.PLAINTEXT_DISALLOWED, host=host
-            )
+            return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.PLAINTEXT_DISALLOWED, host=host)
 
         # An IP-literal target is handled by the floor itself, independent of the
         # resolver — the floor must always know how to classify a literal address
@@ -154,13 +150,9 @@ class SafetyFloor:
             try:
                 ips = self._resolver(host)
             except OSError:
-                return SafetyVerdict(
-                    FloorOutcome.REFUSE, FloorReason.UNRESOLVABLE, host=host
-                )
+                return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.UNRESOLVABLE, host=host)
             if not ips:
-                return SafetyVerdict(
-                    FloorOutcome.REFUSE, FloorReason.UNRESOLVABLE, host=host
-                )
+                return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.UNRESOLVABLE, host=host)
 
         # Validate EVERY resolved address; a single dangerous record refuses the
         # whole target (defeats a multi-A DNS-rebinding trick).
@@ -168,14 +160,10 @@ class SafetyFloor:
             ip = ipaddress.ip_address(ip_str)
             if ip in _CLOUD_METADATA_IPS:  # FRD-035
                 logger.warning("floor_refuse", reason="metadata", host=host, ip=ip_str)
-                return SafetyVerdict(
-                    FloorOutcome.REFUSE, FloorReason.METADATA, ip_str, host
-                )
+                return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.METADATA, ip_str, host)
             if ip.is_link_local:  # FRD-036
                 logger.warning("floor_refuse", reason="link_local", host=host, ip=ip_str)
-                return SafetyVerdict(
-                    FloorOutcome.REFUSE, FloorReason.LINK_LOCAL, ip_str, host
-                )
+                return SafetyVerdict(FloorOutcome.REFUSE, FloorReason.LINK_LOCAL, ip_str, host)
             if ip.is_loopback and not self._allow_plaintext:  # FRD-039 (loopback arm)
                 return SafetyVerdict(
                     FloorOutcome.REFUSE, FloorReason.LOOPBACK_DISALLOWED, ip_str, host
