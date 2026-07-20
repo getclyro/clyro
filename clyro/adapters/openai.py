@@ -1018,7 +1018,15 @@ class TracedCompletions:
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         self._finalize_stream(
-            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms, llm_step
+            session,
+            model,
+            usage,
+            finish_reason,
+            content_parts,
+            tool_acc,
+            kwargs,
+            duration_ms,
+            llm_step,
         )
 
     @staticmethod
@@ -1755,7 +1763,9 @@ class AsyncTracedCompletions(TracedCompletions):
 
     # -- streamed response handling (async, FRD-SDK-006) ----------------
 
-    async def _create_streaming(self, session: Session, kwargs: dict[str, Any], llm_step: int) -> Any:
+    async def _create_streaming(
+        self, session: Session, kwargs: dict[str, Any], llm_step: int
+    ) -> Any:
         injected_usage = False
         if "stream_options" not in kwargs and self._inject_stream_usage:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}
@@ -1814,7 +1824,15 @@ class AsyncTracedCompletions(TracedCompletions):
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         await self._finalize_stream(
-            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms, llm_step
+            session,
+            model,
+            usage,
+            finish_reason,
+            content_parts,
+            tool_acc,
+            kwargs,
+            duration_ms,
+            llm_step,
         )
 
     async def _finalize_stream(
