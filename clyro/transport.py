@@ -171,6 +171,11 @@ class Transport:
         self._event_buffer: list[TraceEvent] = []
         self._buffer_lock: asyncio.Lock | None = None
         self._pricing_task: asyncio.Task | None = None  # retained so it isn't GC'd mid-flight
+        # A10 FRD-023: cumulative count of events the backend dropped at the
+        # trace-quota gate. Non-zero means the stored record — and therefore any
+        # dry-run report built from it — is INCOMPLETE. Surfaced loudly rather
+        # than silently truncating the report into a bad enforce decision.
+        self._dropped_count: int = 0
 
         # Create event sender for SyncWorker
         self._sender = HttpEventSender(config, self._get_client)
@@ -237,6 +242,51 @@ class Transport:
             )
         return self._client
 
+    @property
+    def dropped_count(self) -> int:
+        """Events the backend dropped at the trace-quota gate. Implements FRD-023.
+
+        Non-zero means the server-side record is missing events, so any report
+        built from it (notably a dry-run report) is INCOMPLETE.
+        """
+        return self._dropped_count
+
+    @property
+    def report_incomplete(self) -> bool:
+        """True when the quota gate dropped events — the record is truncated.
+
+        Implements FRD-023: a dry-run report must declare itself
+        "incomplete — N dropped" rather than look complete and lead the operator
+        to a bad enforce decision.
+        """
+        return self._dropped_count > 0
+
+    def _record_dropped(self, result: dict[str, Any]) -> None:
+        """Surface a non-silent trace-quota drop signal. Implements FRD-023.
+
+        The backend returns ``dropped: N`` on a 2xx when the quota gate shed
+        events (``would_block`` markers are retained and dropped last). Logged at
+        WARNING — never debug — so the truncation cannot pass unnoticed.
+        """
+        try:
+            dropped = int(result.get("dropped", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if dropped <= 0:
+            return
+        self._dropped_count += dropped
+        logger.warning(
+            "clyro_traces_dropped_quota",
+            dropped=dropped,
+            dropped_total=self._dropped_count,
+            report_incomplete=True,
+            hint=(
+                "Trace quota exceeded — these events were NOT stored and are not "
+                "retried. Any report over this period is incomplete; would-block "
+                "markers are retained first. Upgrade the plan or reduce volume."
+            ),
+        )
+
     async def send_events(self, events: list[TraceEvent]) -> dict[str, Any]:
         """
         Send trace events to the backend with retry and buffering.
@@ -274,6 +324,15 @@ class Transport:
         # for payload format, retry logic, rate-limit handling, org_id stripping)
         try:
             result = await self._sender.send_batch(events)
+
+            # A10 FRD-023: the backend accepted the request (2xx) but may have
+            # DROPPED events at the trace-quota gate. That is a definitive
+            # decision — retrying would be dropped again forever and grow the
+            # local buffer unbounded — so the events are still marked synced.
+            # What must NOT happen is a silent truncation: surface the drop
+            # loudly and keep a cumulative count so a dry-run report can declare
+            # itself incomplete instead of reading as a complete record.
+            self._record_dropped(result)
 
             # Mark events as successfully synced in local storage
             # This prevents duplicate uploads on next sync attempt
@@ -373,6 +432,31 @@ class Transport:
         # Flush outside the lock to avoid deadlock
         if should_flush:
             await self._flush_buffer()
+
+    def buffer_event_nowait(self, event: TraceEvent) -> None:
+        """Append an event from sync code already running inside this loop.
+
+        ``Session.check_policy`` is synchronous, so the async traced clients'
+        policy-event sink cannot ``await buffer_event``. A sync function has no
+        await points, so it cannot interleave with another coroutine: appending
+        directly is atomic with respect to the event loop and needs no lock.
+
+        Preferred over scheduling a task — a ``create_task`` here would race the
+        turn's flush, which snapshots the buffer under an uncontended lock (i.e.
+        without yielding), so a just-scheduled append would miss the batch.
+
+        Never flushes: the caller's turn ends with an explicit flush.
+        """
+        MAX_BUFFER_SIZE = self.config.batch_size * 10
+        if len(self._event_buffer) >= MAX_BUFFER_SIZE:
+            logger.warning(
+                "event_buffer_overflow",
+                buffer_size=len(self._event_buffer),
+                max_size=MAX_BUFFER_SIZE,
+                dropping_oldest=True,
+            )
+            self._event_buffer.pop(0)
+        self._event_buffer.append(event)
 
     async def _flush_buffer(self) -> None:
         """Flush buffered events to the backend."""
@@ -598,6 +682,16 @@ class SyncTransport:
     def storage(self) -> LocalStorage:
         """Get the local storage instance."""
         return self._transport.storage
+
+    @property
+    def dropped_count(self) -> int:
+        """Events dropped by the backend trace-quota gate (FRD-023)."""
+        return self._transport.dropped_count
+
+    @property
+    def report_incomplete(self) -> bool:
+        """True when the quota gate dropped events — the record is truncated (FRD-023)."""
+        return self._transport.report_incomplete
 
     def send_events(self, events: list[TraceEvent]) -> dict[str, Any]:
         """Send events synchronously."""

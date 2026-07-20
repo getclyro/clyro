@@ -28,6 +28,7 @@ from pathlib import Path
 
 from clyro import __version__
 from clyro.config import load_config
+from clyro.dry_run import log_mode_banner
 from clyro.mcp.audit import AuditLogger
 from clyro.mcp.log import get_logger
 from clyro.mcp.prevention import PreventionStack
@@ -76,6 +77,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-plaintext",
         action="store_true",
         help="Permit plaintext/loopback HTTP targets (the single safety-floor relaxation, FRD-039)",
+    )
+
+    # A10 dry-run (monitor) mode. Implements FRD-002 (CLI override).
+    wrap_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Dry-run (monitor) mode: forward would-be-blocked calls and record "
+        "would-blocks instead of blocking (A10). Precedence: --dry-run > CLYRO_DRY_RUN > config.",
     )
     return parser
 
@@ -166,7 +176,7 @@ def _derive_agent_name(config_agent_name: str | None, server_command: list[str])
     return " ".join(server_command) if server_command else "mcp-agent"
 
 
-async def _init_backend(config, session, server_command):
+async def _init_backend(config, session, server_command, dry_run: bool = False):
     """
     Initialize backend components when API key is configured (FRD-015, FRD-016, FRD-017).
 
@@ -251,7 +261,7 @@ async def _init_backend(config, session, server_command):
         http_client=http_client,
         sync_interval=config.backend.sync_interval_seconds,
     )
-    trace_factory = TraceEventFactory(session=session)
+    trace_factory = TraceEventFactory(session=session, dry_run=dry_run)
 
     # Start background sync loop
     sync_manager.start()
@@ -324,6 +334,7 @@ async def _async_main(
     transport: str | None = None,
     url: str | None = None,
     allow_plaintext: bool = False,
+    dry_run_cli: bool = False,
 ) -> int:
     """Core async entry point — creates all components and runs the router."""
     # 0. Recover any orphaned session from a previous SIGKILL
@@ -337,6 +348,11 @@ async def _async_main(
         config.server.allow_plaintext = True
     _recover_orphaned_session(config.audit.log_path)
 
+    # A10: resolve the enforcement mode with precedence CLI > env > config-file
+    # (FRD-001/002/O-4). --dry-run forces dry_run regardless of env/config.
+    is_dry_run = dry_run_cli or config.resolved_is_dry_run
+    log_mode_banner("mcp", is_dry_run)
+
     # 1. Load config (already done above)
 
     # 2. Create session
@@ -349,7 +365,7 @@ async def _async_main(
     if config.is_backend_enabled:
         try:
             sync_manager, trace_factory, http_client = await _init_backend(
-                config, session, server_command
+                config, session, server_command, dry_run=is_dry_run
             )
         except Exception as exc:
             logger.warning("backend_init_failed", error=str(exc))
@@ -410,7 +426,7 @@ async def _async_main(
 
     # 6. Signal handlers (FRD-012)
     loop = asyncio.get_event_loop()
-    router = MessageRouter(config, session, transport, prevention, audit)
+    router = MessageRouter(config, session, transport, prevention, audit, dry_run=is_dry_run)
 
     def _handle_sigterm() -> None:
         # Write session_end immediately in signal handler — the process
@@ -519,6 +535,7 @@ def main() -> None:
             transport=args.transport,
             url=args.url,
             allow_plaintext=args.allow_plaintext,
+            dry_run_cli=args.dry_run,
         )
     )
     sys.exit(exit_code)

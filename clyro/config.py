@@ -32,6 +32,7 @@ from pydantic import (
 )
 
 from clyro.constants import DEFAULT_API_URL
+from clyro.dry_run import resolve_dry_run_env, resolve_is_dry_run
 from clyro.exceptions import ClyroConfigError
 
 # ---------------------------------------------------------------------------
@@ -148,7 +149,47 @@ class ExecutionControls(BaseModel):
         description="Enable policy enforcement via backend evaluation",
     )
 
+    # A10 dry-run (monitor) mode. Implements FRD-001.
+    # ``enforce`` (default) is today's behaviour: a would-be violation raises/blocks.
+    # ``dry_run`` downgrades every *enabled* check from raise/block to
+    # record-a-would_block-and-proceed. Orthogonal to the ``enable_*`` flags
+    # (a disabled check stays fully off — FRD-006) and to ``fail_open`` (FRD-007).
+    # Any unrecognised value resolves to ``enforce`` (fail-safe — FRD-NFR-005).
+    enforcement_mode: Literal["enforce", "dry_run"] = Field(
+        default="enforce",
+        description="Enforcement mode: 'enforce' (raise/block) or 'dry_run' (record + proceed)",
+    )
+
+    # A10 absolute safety ceiling. Implements FRD-021.
+    # A hard, non-disableable cap on cumulative steps/cost that raises regardless
+    # of ``enforcement_mode`` (enforce AND dry_run) and regardless of the soft
+    # ``enable_*`` flags — it bounds the "dry-run stops nothing" footgun so a
+    # genuine runaway loop/cost cannot run unbounded. Set deliberately FAR ABOVE
+    # the configurable soft maxima (``max_steps`` ≤ 100_000, ``max_cost_usd`` ≤
+    # 10_000) so it never fires before the soft limit in enforce mode (C2).
+    #
+    # NOTE (behaviour): because it is mode-independent, an ENFORCE-mode agent that
+    # deliberately disables its soft limits (``enable_step_limit=False`` /
+    # ``enable_cost_limit=False``) is still stopped once cumulative steps/cost
+    # cross this ceiling — where previously it would run unbounded. Raise these
+    # values if you intentionally run very long / high-cost unbounded agents.
+    absolute_max_steps: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Hard ceiling on cumulative steps; raises even in dry_run (FRD-021)",
+    )
+    absolute_max_cost_usd: float = Field(
+        default=100_000.0,
+        ge=0.0,
+        description="Hard ceiling on cumulative cost USD; raises even in dry_run (FRD-021)",
+    )
+
     model_config = {"extra": "forbid"}
+
+    @property
+    def is_dry_run(self) -> bool:
+        """True when the resolved enforcement mode is dry_run. Implements FRD-001."""
+        return self.enforcement_mode == "dry_run"
 
 
 class PolicyRecommenderConfig(BaseModel):
@@ -458,6 +499,15 @@ class ClyroConfig(BaseModel):
         if self.local_storage_path is None:
             default_path = Path.home() / ".clyro" / "traces.db"
             object.__setattr__(self, "local_storage_path", str(default_path))
+
+        # A10: a well-formed CLYRO_DRY_RUN override wins over the in-code
+        # enforcement_mode even under explicit construction (FRD-002 precedence).
+        # A present-but-malformed value resolves to enforce (fail-safe, FRD-NFR-005).
+        env_dry_run = resolve_dry_run_env()
+        if env_dry_run is not None:
+            object.__setattr__(
+                self.controls, "enforcement_mode", "dry_run" if env_dry_run else "enforce"
+            )
         return self
 
     def get_storage_path(self) -> Path:
@@ -569,6 +619,7 @@ class ClyroConfig(BaseModel):
             CLYRO_MAX_COST_USD: Maximum cost in USD
             CLYRO_STORAGE_PATH: Local storage path
             CLYRO_FAIL_OPEN: Fail-open behavior (true/false)
+            CLYRO_DRY_RUN: Enforcement mode override (truthy => dry_run; FRD-002)
 
         Returns:
             ClyroConfig instance
@@ -606,6 +657,12 @@ class ClyroConfig(BaseModel):
                 "1",
                 "yes",
             )
+        # A10 dry-run: CLYRO_DRY_RUN sets the enforcement mode (FRD-002). Only an
+        # explicit recognised truthy value enables dry_run; a present-but-malformed
+        # value resolves to enforce (fail-safe — FRD-NFR-005). Absent => untouched.
+        env_dry_run = resolve_dry_run_env()
+        if env_dry_run is not None:
+            controls_dict["enforcement_mode"] = "dry_run" if env_dry_run else "enforce"
         if controls_dict:
             config_dict["controls"] = ExecutionControls(**controls_dict)
 
@@ -849,6 +906,13 @@ class WrapperConfig(BaseModel):
     # existing configs → defaults preserve current stdio behaviour exactly.
     transport: Literal["stdio", "http"] = Field(default="stdio")
     server: ServerConfig = Field(default_factory=ServerConfig)
+    # A10 dry-run (monitor) mode for the CLI-launched surfaces. Implements FRD-001.
+    # A boolean here (their configs are already flat booleans); the resolver
+    # normalizes it to the same is_dry_run concept as the SDK enum.
+    dry_run: bool = Field(
+        default=False,
+        description="Dry-run (monitor) mode: record would-blocks and proceed (A10)",
+    )
     default_action: str = Field(
         description=(
             "Required. Decision when no rule's condition matches: 'block' or 'allow'. "
@@ -885,6 +949,16 @@ class WrapperConfig(BaseModel):
     def resolved_api_url(self) -> str:
         """API URL with env var override."""
         return os.environ.get("CLYRO_API_URL") or self.backend.api_url
+
+    @property
+    def resolved_is_dry_run(self) -> bool:
+        """Dry-run mode with env override. Implements FRD-002 / FRD-NFR-005.
+
+        A well-formed ``CLYRO_DRY_RUN`` override wins over the config-file field;
+        a present-but-malformed value resolves to enforce (never a silent
+        dry_run). The MCP CLI layers ``--dry-run`` on top of this (FRD-002/O-4).
+        """
+        return resolve_is_dry_run(self.dry_run)
 
 
 def load_mcp_config(config_path: str | None = None) -> WrapperConfig:

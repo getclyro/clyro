@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/getclyro/clyro/actions/workflows/ci.yml/badge.svg)](https://github.com/getclyro/clyro/actions/workflows/ci.yml)
 
-**Runtime governance for AI agents — prevent failures before they happen.**
+**Runtime governance for AI agents: prevent failures before they happen.**
 
 One `pip install`, three tools:
 
@@ -22,11 +22,11 @@ Clyro is a governance platform for AI agents. While most tools let you watch age
 
 **Works fully offline.** No API key required. Install, wrap, and get governance immediately with local YAML policies. Optionally connect to Clyro Cloud for team dashboards, shared policies, and session replay.
 
-The SDK is the integration layer: add `clyro.wrap()` to any Python agent and you get execution tracing, cost tracking, step limits, loop detection, and policy enforcement — all with zero changes to your agent logic. If the SDK encounters an error, it fails open — your agent keeps running.
+The SDK is the integration layer: add `clyro.wrap()` to any Python agent and you get execution tracing, cost tracking, step limits, loop detection, and policy enforcement, all with zero changes to your agent logic. If the SDK encounters an error it fails open, and your agent keeps running.
 
 ## Features
 
-- **Works offline**: Local mode with YAML policies — no cloud dependency
+- **Works offline**: Local mode with YAML policies, no cloud dependency
 - **5 framework adapters**: LangGraph, CrewAI, Claude Agent SDK, Anthropic SDK, Generic
 - **Policy recommender** (`clyro suggest`): point it at an existing agent → it recommends the agent type, concerns, and kits to govern
 - **Prevention Stack**: Step limits, cost limits, loop detection, business logic guardrails
@@ -34,7 +34,7 @@ The SDK is the integration layer: add `clyro.wrap()` to any Python agent and you
 - **Cost tracking**: Automatic LLM cost calculation for OpenAI and Anthropic models
 - **MCP governance**: JSON-RPC proxy for Claude Desktop, Cursor, VS Code
 - **Claude Code hooks**: PreToolUse/PostToolUse governance for Bash, Edit, Write
-- **Minimal dependencies**: 6 lightweight packages — no heavy ML frameworks, no vendor lock-in
+- **Minimal dependencies**: 6 lightweight packages, no heavy ML frameworks, no vendor lock-in
 - **Fail-open design**: SDK failures never break your agent
 
 ## Quick Start
@@ -45,13 +45,13 @@ The SDK is the integration layer: add `clyro.wrap()` to any Python agent and you
 pip install clyro
 ```
 
-### 1. SDK — Wrap any Python agent
+### 1. SDK: Wrap any Python agent
 
 ```python
 import clyro
 from clyro import ClyroConfig, ExecutionControls
 
-# No API key needed — runs in local mode automatically
+# No API key needed: runs in local mode automatically
 wrapped = clyro.wrap(
     your_agent,
     config=ClyroConfig(
@@ -65,11 +65,11 @@ wrapped = clyro.wrap(
     ),
 )
 
-# Run normally — governance enforced, session summary printed at end
+# Run normally: governance enforced, session summary printed at end
 result = wrapped.invoke({"messages": [{"role": "user", "content": "Hello"}]})
 ```
 
-### 2. MCP Wrapper — Govern MCP tool calls
+### 2. MCP Wrapper: Govern MCP tool calls
 
 ```bash
 # Create config
@@ -90,7 +90,7 @@ EOF
 clyro-mcp wrap --config mcp_governance.yaml -- npx @modelcontextprotocol/server-filesystem /tmp
 ```
 
-### 3. Claude Code Hooks — Govern Claude Code
+### 3. Claude Code Hooks: Govern Claude Code
 
 ```json
 // In Claude Desktop settings.json
@@ -104,10 +104,10 @@ clyro-mcp wrap --config mcp_governance.yaml -- npx @modelcontextprotocol/server-
 }
 ```
 
-### 4. Policy Recommender — what should I govern?
+### 4. Policy Recommender: what should I govern?
 
 Point Clyro at an agent you've already built and it recommends the agent type,
-the concerns worth tracking, and the kits to apply — reading its tools, prompt,
+the concerns worth tracking, and the kits to apply, reading its tools, prompt,
 and structure (it never runs the agent). Runs locally, no account needed.
 
 ```bash
@@ -166,7 +166,7 @@ config = ClyroConfig(
 
 > **Cloud mode: the dashboard's `default_action` always wins.** When you set
 > an `api_key` (cloud mode), the cloud dashboard's `default_action` is
-> authoritative — your local YAML's `default_action` is treated as a
+> authoritative: your local YAML's `default_action` is treated as a
 > fallback that applies only when the agent has no cloud policies attached
 > (or the policy fetch fails). This is **cloud-wins** precedence: a
 > centrally-mandated default cannot be silently overridden by an
@@ -187,6 +187,10 @@ export CLYRO_ENDPOINT="https://api.clyro.dev"
 export CLYRO_AGENT_NAME="my-agent"
 export CLYRO_MAX_STEPS="50"
 export CLYRO_MAX_COST_USD="10.0"
+
+# Monitor mode: evaluate every check, block nothing (see "Dry-Run Mode" below).
+# Truthy: true, 1, yes, on, dry_run. Any other value set = enforce (fail-safe).
+export CLYRO_DRY_RUN="true"
 ```
 
 ```python
@@ -217,6 +221,8 @@ config = ClyroConfig(
         enable_step_limit=True,
         enable_cost_limit=True,
         enable_loop_detection=True,
+        # "enforce" (default) or "dry_run"; see "Dry-Run Mode" below.
+        enforcement_mode="enforce",
     ),
 
     # Local storage
@@ -309,6 +315,55 @@ except LoopDetectedError as e:
     print(f"Loop detected: {e.iterations} iterations")
     print(f"State hash: {e.state_hash}")
 ```
+
+## Dry-Run Mode
+
+Run the full governance stack without enforcing it. Every check still evaluates and
+records what it *would* have blocked, but nothing is ever stopped. Use it to validate
+limits and policies against real traffic before turning enforcement on.
+
+```python
+controls=ExecutionControls(
+    max_steps=25,
+    max_cost_usd=10.0,
+    enable_policy_enforcement=True,
+    enforcement_mode="dry_run",   # monitor only; nothing is blocked
+)
+```
+
+Or without changing code:
+
+```bash
+CLYRO_DRY_RUN=true python my_agent.py
+```
+
+You'll see a banner once at startup, then one line per distinct finding:
+
+```
+CLYRO-DRYRUN active — enforcement suppressed (mode=dry_run)   surface=sdk
+CLYRO-DRYRUN would-have-blocked  action=step_26  check=step  rule=None  would_be=block
+```
+
+Each finding is also recorded as a trace event with `event_type="would_block"`,
+de-duplicated to one marker per distinct reason: a rule that trips on 500 actions
+records one event, not 500.
+
+**What dry-run does not suppress:**
+
+- **Absolute ceilings** (`absolute_max_steps`, `absolute_max_cost_usd`) still raise.
+  They are the runaway-agent backstop and cannot be disabled.
+- **Approval handlers are skipped**: a `require_approval` policy records a marker and
+  proceeds, so an unattended run cannot hang waiting on a prompt.
+
+Dry-run events are marked at write time and excluded from all analytics read paths, so
+a monitor-mode session never moves your Reliability Score or dashboard metrics.
+
+The same flag exists on the other surfaces: `dry_run: true` (top level) in the MCP
+wrapper and Claude Code hooks configs, plus `clyro-mcp wrap --dry-run`. Precedence is
+`--dry-run` > `CLYRO_DRY_RUN` > config file. The CLI flag is MCP-only, so for the SDK
+and hooks the chain is `CLYRO_DRY_RUN` > config.
+
+Full guide: [Dry-Run Mode](https://docs.clyro.dev/docs/concepts/dry-run-mode).
 
 ## Cost Tracking
 
@@ -418,10 +473,10 @@ except ClyroError as e:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `StepLimitExceededError` raised unexpectedly | `max_steps` set too low for your agent's workload | Increase `max_steps` in `ExecutionControls` or set `enable_step_limit=False` to disable |
-| `CostLimitExceededError` on first run | Default cost limit too low for the model you're using | Increase `max_cost_usd` — check `session.cumulative_cost` after a test run to calibrate |
+| `CostLimitExceededError` on first run | Default cost limit too low for the model you're using | Increase `max_cost_usd`; check `session.cumulative_cost` after a test run to calibrate |
 | `LoopDetectedError` false positive | Agent legitimately revisits similar states | Raise `loop_detection_threshold` (default: 3) or disable with `enable_loop_detection=False` |
 | Traces not appearing in dashboard | Sync worker hasn't flushed yet, or API key is invalid | Check `CLYRO_API_KEY` is set; traces flush every `sync_interval_seconds` (default: 5s). Inspect `~/.clyro/traces.db` for local buffered traces |
-| `TransportError` on startup | Backend unreachable (network issue or wrong endpoint) | Verify `CLYRO_ENDPOINT`; SDK fails open so your agent still runs — traces buffer locally |
+| `TransportError` on startup | Backend unreachable (network issue or wrong endpoint) | Verify `CLYRO_ENDPOINT`; SDK fails open so your agent still runs; traces buffer locally |
 | Import error: `ModuleNotFoundError: clyro` | SDK not installed in active environment | Run `pip install clyro` in your virtualenv |
 | Agent runs but no traces captured | `@clyro.wrap` decorator missing or `clyro.configure()` not called | Ensure `clyro.configure(config)` runs before any wrapped function is called |
 | High memory usage | Large `local_storage_max_mb` or many un-synced traces | Lower `local_storage_max_mb` or check that background sync is running (backend reachable) |
@@ -483,7 +538,7 @@ except ClyroError as e:
 
 | Guide | Description |
 |-------|-------------|
-| [Policy Recommender](docs/sdk/policy-recommender.md) | `clyro suggest` — recommend the agent type, concerns, and kits to govern |
+| [Policy Recommender](docs/sdk/policy-recommender.md) | `clyro suggest`; recommend the agent type, concerns, and kits to govern |
 | [LangGraph](docs/sdk/langgraph.md) | Wrap LangGraph agents with governance |
 | [CrewAI](docs/sdk/crewai.md) | Wrap CrewAI agents with governance |
 | [Claude Agent SDK](docs/sdk/claude_agent_sdk.md) | Wrap Claude Agent SDK with governance |
@@ -495,9 +550,9 @@ except ClyroError as e:
 
 ### Reference
 
-- [API Reference](https://docs.clyro.dev/sdk) — Full API documentation
-- [CHANGELOG](CHANGELOG.md) — Version history
-- [CONTRIBUTING](CONTRIBUTING.md) — Development setup and guidelines
+- [API Reference](https://docs.clyro.dev/sdk): Full API documentation
+- [CHANGELOG](CHANGELOG.md): Version history
+- [CONTRIBUTING](CONTRIBUTING.md): Development setup and guidelines
 
 ## Development
 
