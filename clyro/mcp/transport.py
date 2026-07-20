@@ -115,3 +115,24 @@ class StdioTransport:
             line = await self._process.stderr.readline()
             return line if line else None
         return None
+
+    # ------------------------------------------------------------------
+    # ServerTransport protocol conformance (FRD-031)
+    # These delegate to the stdio-specific methods above so the router can be
+    # transport-blind; ``read_stderr_line`` stays stdio-only (HTTP has no stderr).
+    # ------------------------------------------------------------------
+
+    async def open(self) -> None:
+        await self.start()
+
+    async def send(self, data: bytes) -> None:
+        await self.write_to_child(data)
+
+    async def receive(self) -> bytes | None:
+        return await self.read_line_from_child()
+
+    async def close(self) -> None:
+        await self.terminate()
+
+    def is_live(self) -> bool:
+        return self._process is not None and self._process.returncode is None

@@ -89,6 +89,7 @@ class TestAsyncMainBackendFailGraceful:
         mock_config.audit.log_path = "/tmp/test-audit.jsonl"
         mock_config.audit.redact_parameters = []
         mock_config.global_ = MagicMock()
+        mock_config.transport = "stdio"  # native-HTTP config field (default)
 
         with patch("clyro.mcp.cli.load_config", return_value=mock_config), \
              patch("clyro.mcp.cli._init_backend", side_effect=RuntimeError("backend down")), \
