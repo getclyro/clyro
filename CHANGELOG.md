@@ -7,10 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-20
+
 ### Added
 
-**`clyro suggest` — the Policy Recommender.** Point Clyro at an agent you've
-already built and it recommends what to govern — the agent's `agent_type`, the
+**Dry-run (monitor) mode.** Run the full governance stack without enforcing it.
+Every check (step limit, cost limit, loop detection, and policy) still evaluates
+and records what it *would* have blocked, then lets the agent proceed. The
+`terraform plan` of agent governance: validate limits and policies against real
+traffic before turning enforcement on.
+
+- SDK: `ExecutionControls(enforcement_mode="dry_run")` (default remains `"enforce"`).
+- MCP wrapper: top-level `dry_run: true` in the governance YAML, or
+  `clyro-mcp wrap --dry-run`.
+- Claude Code hooks: top-level `dry_run: true`.
+- Environment override `CLYRO_DRY_RUN` (truthy: `true`, `1`, `yes`, `on`,
+  `dry_run`). Any other value that is *set* resolves to enforce, so a typo cannot
+  silently disable enforcement. Precedence: `--dry-run` > `CLYRO_DRY_RUN` > config.
+- Findings are recorded as a distinct `would_block` trace event and are never
+  written to the violations record. De-duplicated to one marker per distinct
+  reason (session + rule + action type + outcome), so a rule tripping on 500
+  actions records one event rather than 500.
+- Dry-run events are marked at write time and excluded from every analytics read
+  path, so a monitor-mode session cannot move your Reliability Score, drift
+  detection, or dashboard metrics.
+- In dry-run, a `require_approval` policy records a marker and proceeds: the
+  approval handler is never invoked, so an unattended run cannot hang.
+
+Full guide: <https://docs.clyro.dev/docs/concepts/dry-run-mode>
+
+**Absolute ceilings.** `absolute_max_steps` (default 1,000,000) and
+`absolute_max_cost_usd` (default $100,000) raise `AbsoluteCeilingExceededError`
+even in dry-run and cannot be disabled: the backstop that bounds the
+"dry-run stops nothing" failure mode.
+
+### Fixed
+
+- **Anthropic adapter: local policies were silently ignored.** The policy
+  evaluator was gated on `api_key`, so in local mode no evaluator was built at
+  all and rules in `~/.clyro/sdk/policies.yaml` never ran. See the breaking-change
+  note below.
+- **OpenAI adapter: dry-run still blocked on the cost limit.** The post-call cost
+  check (the one that actually fires, since cost crosses the limit while
+  recording the current call) had no dry-run gate. It raised
+  `CostLimitExceededError` and emitted an enforced `error` event. Both surfaces
+  now record a `would_block` and proceed.
+- **Async OpenAI/Anthropic clients dropped every policy event.** The policy-event
+  sink appended to a session list that nothing drains, so `policy_check` (enforce)
+  and `would_block` (dry-run) events never reached the backend. Enforce mode
+  masked this because the raised error made the block visible anyway.
+- **`would_block` events emitted during session teardown could be lost.** The step
+  limit trips on the final `record_step`, microseconds before the buffer flush;
+  the sink scheduled the write as a task and the flush snapshotted the buffer
+  without awaiting it. In-flight sink tasks are now drained before flushing.
+- **Dry-run banner was missing on the OpenAI and Anthropic client adapters.**
+  These return a traced client directly rather than a `WrappedAgent`, so the
+  startup banner never fired, leaving the two surfaces where dry-run is hardest
+  to confirm as the only ones that never announced their mode.
+
+### Changed
+
+- **BREAKING (enforce mode, Anthropic adapter only).** Local YAML policies now
+  actually apply when using `clyro.wrap()` on an `anthropic` client in local mode.
+  Previously they were silently ignored, so an agent that appeared to pass may
+  have been running with no policy enforcement at all. After upgrading, those
+  rules will genuinely block. Review `~/.clyro/sdk/policies.yaml` before upgrading
+  if you rely on this path, or set `enforcement_mode="dry_run"` first to see what
+  would be blocked.
+
+**`clyro suggest`: the Policy Recommender.** Point Clyro at an agent you've
+already built and it recommends what to govern: the agent's `agent_type`, the
 `concerns` worth tracking, and the `kits` to apply, each with a rationale and
 confidence. It introspects the wrapped agent (tools, system prompt, topology,
 model) without running it, maps it to the catalogue with deterministic rules,
@@ -20,7 +86,7 @@ it can never invent an id). Runs locally with no Clyro account.
 - New `clyro suggest <import-path>` command (the SDK now also installs a `clyro`
   console-script alongside `clyro-sdk`).
 - Static introspection across all four frameworks (LangGraph, CrewAI, Anthropic
-  SDK, Claude Agent SDK) with graceful degradation — never raises on an
+  SDK, Claude Agent SDK) with graceful degradation: never raises on an
   unrecognised agent.
 - LLM transports: `auto` (Claude Code CLI → Anthropic API key → rule-based),
   plus explicit `claude-code` / `anthropic-api` / `rule-based`.
@@ -28,7 +94,7 @@ it can never invent an id). Runs locally with no Clyro account.
   recommendation and get a one-time `?prefill=<token>` wizard link),
   `--agent-name`, `--agent-id`, `--apply`, `--no-cache`, `--debug`. Results are
   cached by an agent fingerprint at `~/.clyro/proposer-cache.db`.
-- A plain `--prefill` is the **new-agent** flow — it sends no `agent_id` (the
+- A plain `--prefill` is the **new-agent** flow: it sends no `agent_id` (the
   wizard creates the agent). To **re-recommend an existing agent**, identify it
   with `--agent-id <uuid>` or `--agent-name <name>` (derives
   `uuid5(org_id, name)`, matching `clyro.wrap()` registration); the prefill is
@@ -40,7 +106,7 @@ it can never invent an id). Runs locally with no Clyro account.
   toward anthropic-api and still falls back gracefully (so a developer's local
   `claude-code` works even with a cloud api_key configured).
 - Fixed: the anthropic-api transport no longer receives the Clyro api_key
-  (`cly_…`) as its Anthropic key — it reads `ANTHROPIC_API_KEY` from the
+  (`cly_…`) as its Anthropic key; it reads `ANTHROPIC_API_KEY` from the
   environment. The old wiring sent the Clyro key to api.anthropic.com (→ 401
   invalid x-api-key).
 - New `policy_recommender` config block on `ClyroConfig`
@@ -57,14 +123,14 @@ returned `True` when a rule was *violated* (constraint model); they now return
 policy's `default_action` is the fallback when no rule matches.
 
 The boolean math changed for four operators:
-- `equals` — now matches when `field == value` (was: when `field != value`).
-- `not_equals` — now matches when `field != value` (was: when `field == value`).
+- `equals`: now matches when `field == value` (was: when `field != value`).
+- `not_equals`: now matches when `field != value` (was: when `field == value`).
   Also newly added to the backend; previously absent from the cloud schema.
-- `in_list` — now matches when `field IS in the list` (was: when `field NOT
+- `in_list`: now matches when `field IS in the list` (was: when `field NOT
   in the list`). Rules written under the old behavior as a *whitelist* with
   `action: block` now block the listed values; swap to `not_in_list` to
   preserve the original intent.
-- `not_in_list` — now matches when `field IS NOT in the list` (was: when
+- `not_in_list`: now matches when `field IS NOT in the list` (was: when
   `field IS in the list`). Symmetric swap.
 
 `contains` and `not_contains` math is unchanged but is now **case-insensitive
@@ -77,7 +143,7 @@ rule's action fires) instead of raising. Pairs naturally with `action: block`
 for fail-closed behavior on bad input.
 
 **Rule schema is stricter.** Both fields are now required and have no implicit
-default — Pydantic rejects YAML/JSON that omits either:
+default; Pydantic rejects YAML/JSON that omits either:
 - Per-rule `action: block | allow | require_approval` is required.
 - Per-policy `default_action: block | allow` is required.
 
@@ -87,7 +153,7 @@ hooks to `{matched, no_match, skipped}`. Replaces the previous mix of
 (backend verbose response). Existing dashboards or log queries keying on the
 old strings will need updating.
 
-**MCP wrapper / hooks: cloud `default_action` now merged into wrapper config —
+**MCP wrapper / hooks: cloud `default_action` now merged into wrapper config,
 cloud-wins precedence.** Previously each fetched cloud policy's
 `default_action` was silently discarded when its rules were merged into the
 local `WrapperConfig`. Now `CloudPolicyFetcher.fetch_and_merge` returns a
@@ -104,7 +170,7 @@ cloud mode the backend's `default_action` is authoritative. The SDK's local
 YAML pre-flight (`PolicyEvaluator._check_local_policies`) continues to enforce
 explicit local rules (a matched `action: block` rule still short-circuits
 before the network call), but a local YAML's `default_action: block` no longer
-raises at pre-flight — the decision is deferred to the backend.
+raises at pre-flight: the decision is deferred to the backend.
 
 ### Migration
 
@@ -113,16 +179,16 @@ Most existing policies need at minimum:
    cloud policy root.
 2. Add `action: block` (or `allow` / `require_approval`) to every rule.
 
-Rules that previously relied on the constraint model — particularly `in_list`
+Rules that previously relied on the constraint model (particularly `in_list`
 or `not_in_list` paired with `action: block` to enforce an allowlist or
-blocklist — need their operator flipped to preserve original behavior:
+blocklist) need their operator flipped to preserve original behavior:
 
 | Original intent | Old shape (constraint) | New shape (trigger) |
 |---|---|---|
 | Allowlist (allow listed; block others) | `in_list X + action: block`, default allow | `in_list X + action: allow`, **default block** *or* `not_in_list X + action: block`, default allow |
 | Denylist (block listed; allow others) | `not_in_list X + action: block`, default allow | `in_list X + action: block`, default allow |
 
-Both shapes now work correctly with field-scoped rules — rules whose
+Both shapes now work correctly with field-scoped rules: rules whose
 `parameter` doesn't appear on every action type:
 
 - **Denylist** (`default_action: allow` + `action: block`): the rule simply
@@ -130,7 +196,7 @@ Both shapes now work correctly with field-scoped rules — rules whose
   `allow`.
 - **Allowlist** (`default_action: block` + `action: allow`): when every rule
   in a policy was skipped because its field wasn't present on this action,
-  the policy is treated as inapplicable — `default_action` is bypassed and
+  the policy is treated as inapplicable: `default_action` is bypassed and
   the call falls through to `allow`. So an allowlist policy targeting
   `rmq_cluster` (only present on tool calls) no longer blocks
   `agent_execution` or `llm_call`.
@@ -149,9 +215,9 @@ the updated operator reference and rule-shape guidance.
 ### Added
 
 #### SDK Core
-- **Local mode**: Full offline operation — no API key or cloud connection required. Set `mode="local"` or omit `api_key` to auto-resolve. Env var `CLYRO_MODE=local|cloud` supported.
+- **Local mode**: Full offline operation, no API key or cloud connection required. Set `mode="local"` or omit `api_key` to auto-resolve. Env var `CLYRO_MODE=local|cloud` supported.
 - **Local YAML policies**: Declarative policy rules in `~/.clyro/sdk/policies.yaml`. Supports 8 operators (`equals`, `not_equals`, `contains`, `not_contains`, `greater_than`, `less_than`, `max_value`, `min_value`), `block`/`allow`/`require_approval` decisions, and per-rule `fail_open` override.
-- **Transport gating**: Zero network calls in local mode — no HTTP client instantiated, no DNS resolution, no connection attempts.
+- **Transport gating**: Zero network calls in local mode, with no HTTP client instantiated, no DNS resolution, no connection attempts.
 - **Session-end governance summary**: After every run, prints steps, cost, violations, and controls triggered to terminal. Suppressible via `CLYRO_QUIET=1|true`.
 - **First-run welcome message**: One-time banner showing SDK version, docs link, and community URL on first `clyro.wrap()` call per process.
 - **Policy violation context logging**: On block/require_approval, logs rule name, parameter, operator, expected vs actual values, and CTA to configure team-wide policies.
@@ -186,7 +252,7 @@ the updated operator reference and rule-shape guidance.
 - SDK CLI renamed from `clyro` to `clyro-sdk` to avoid collision with monorepo tooling.
 
 ### Fixed
-- `org_id` resolution no longer fails when API key is absent — gracefully defaults to `"local"`.
+- `org_id` resolution no longer fails when API key is absent; gracefully defaults to `"local"`.
 - `CLYRO_QUIET` now accepts both `"1"` and `"true"` (case-insensitive).
 
 ## [0.1.0] - 2026-02-10

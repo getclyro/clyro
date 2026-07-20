@@ -37,6 +37,13 @@ logger = structlog.get_logger(__name__)
 # channels of the same model, so they stay stripped.
 _CHANNEL_SUFFIXES = (":beta", ":extended", "-latest")
 _DATE_SUFFIX_RE = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})$")
+# Single-digit minor-version dash -> dot: reconciles provider API ids that use dashes
+# (Anthropic/Qwen/GLM/Ernie, e.g. claude-haiku-4-5) with the catalog's dotted OpenRouter
+# keys (claude-haiku-4.5). Only a SINGLE digit on each side converts, so multi-digit
+# snapshots and context windows (gpt-4-32k, gpt-4-0613, gpt-4-1106) are left intact.
+# Verified across OpenRouter + provider catalogs: no real model uses single-digit X-Y
+# for anything other than a version.
+_DASH_VERSION_RE = re.compile(r"(?<![\d.])(\d)-(\d)(?![\d])")
 
 
 def _normalize(model: str) -> str:
@@ -44,7 +51,9 @@ def _normalize(model: str) -> str:
 
     Close-parity (not byte-exact) with the backend C2 normalizer: it strips the
     provider segment by ``rsplit('/')`` rather than a known-prefix list, which
-    matches real model ids but may differ on exotic ones.
+    matches real model ids but may differ on exotic ones. Additionally folds a
+    single-digit minor-version dash to a dot (``claude-haiku-4-5`` -> ``claude-haiku-4.5``)
+    so provider dash ids match the catalog's dotted keys.
     """
     n = model.strip().lower()
     if "/" in n:
@@ -53,7 +62,8 @@ def _normalize(model: str) -> str:
         if n.endswith(suffix):
             n = n[: -len(suffix)]
             break
-    return _DATE_SUFFIX_RE.sub("", n)
+    n = _DATE_SUFFIX_RE.sub("", n)
+    return _DASH_VERSION_RE.sub(r"\1.\2", n)
 
 
 class PricingCatalogCache:
@@ -89,7 +99,10 @@ class PricingCatalogCache:
                 continue
             if input_per_1k < 0 or output_per_1k < 0:
                 continue
-            prices[key] = (input_per_1k, output_per_1k)
+            # Normalize the catalog key on ingest too, so both sides go through the same
+            # _normalize (symmetric): the stored key and the lookup id always reduce to the
+            # same canonical form regardless of what form the backend sends.
+            prices[_normalize(key)] = (input_per_1k, output_per_1k)
 
         if not prices:
             logger.warning("pricing_catalog_empty_payload", fail_open=True)

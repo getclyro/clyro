@@ -221,6 +221,39 @@ class TestCatalogue:
         assert snap.is_valid_id("concern.pii-protection")
         assert not snap.is_valid_id("concern.unknown")
 
+    def test_catalogue_fetch_sends_clyro_sdk_user_agent(self, monkeypatch):
+        """Catalogue fetch must identify as clyro-sdk, not urllib's default UA.
+
+        urllib's default ``Python-urllib/x`` UA is blocked by Cloudflare's default
+        bot rules (403, error 1010) — the same reason the prefill POST sets it — so
+        the catalogue fetch must send ``User-Agent: clyro-sdk/<version>`` or the
+        documented first-run download is blocked.
+        """
+        import json as _json
+
+        from clyro import __version__
+        from clyro.recommender import catalogue_client
+
+        captured = {}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self):
+                return _json.dumps({"items": []}).encode("utf-8")
+
+        def _fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            return _FakeResp()
+
+        monkeypatch.setattr(catalogue_client.urllib.request, "urlopen", _fake_urlopen)
+        catalogue_client._http_get_json("https://api.clyro.dev/v1/agent-types", 5)
+        assert captured["ua"] == f"clyro-sdk/{__version__}"
+
 
 # --- cache (FRD-PR-016) -------------------------------------------------------
 class TestCache:

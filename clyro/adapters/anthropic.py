@@ -51,6 +51,7 @@ from clyro.exceptions import (
     PolicyViolationError,
     StepLimitExceededError,
 )
+from clyro.local_policy import SDKLocalPolicyEvaluator
 from clyro.policy import PolicyEvaluator
 from clyro.session import Session
 from clyro.trace import (
@@ -246,6 +247,38 @@ class AnthropicAdapter:
         """Get the Anthropic SDK version."""
         return self.FRAMEWORK_VERSION
 
+    def _build_policy_evaluator(self) -> PolicyEvaluator | SDKLocalPolicyEvaluator | None:
+        """Build the policy evaluator, supporting cloud and local modes.
+
+        Policy enforcement works in BOTH modes when enabled: cloud uses the
+        backend PolicyEvaluator (needs an api_key); local mode uses the YAML-based
+        SDKLocalPolicyEvaluator — so enforcement applies even with no api_key.
+
+        ``wrap()`` returns this adapter's traced client directly rather than a
+        WrappedAgent, so the wrapper's own local evaluator is never built for
+        this path. Gating solely on ``api_key`` therefore left local mode with no
+        evaluator at all: policies in ~/.clyro/sdk/policies.yaml were silently
+        ignored — no enforcement, and no dry-run would_block either. Step and cost
+        masked it, being session-level controls that need no evaluator.
+        """
+        if not self._config.controls.enable_policy_enforcement:
+            return None
+        if self._config.mode == "local":
+            # A10 FRD-020 (A5): thread the resolved dry-run mode so the local
+            # policy path records-and-proceeds instead of raising in dry_run.
+            return SDKLocalPolicyEvaluator(
+                approval_handler=self._approval_handler,
+                dry_run=self._config.controls.is_dry_run,
+            )
+        if self._config.api_key:
+            return PolicyEvaluator(
+                config=self._config,
+                agent_id=self._agent_id,
+                org_id=self._org_id,
+                approval_handler=self._approval_handler,
+            )
+        return None
+
     def create_traced_client(self) -> AnthropicTracedClient | AsyncAnthropicTracedClient:
         """
         Create a traced client proxy.  # Implements FRD-002
@@ -260,15 +293,8 @@ class AnthropicAdapter:
         else:
             transport = SyncTransport(self._config)
 
-        # Initialize policy evaluator (if enabled)
-        policy_evaluator: PolicyEvaluator | None = None
-        if self._config.controls.enable_policy_enforcement and self._config.api_key:
-            policy_evaluator = PolicyEvaluator(
-                config=self._config,
-                agent_id=self._agent_id,
-                org_id=self._org_id,
-                approval_handler=self._approval_handler,
-            )
+        # Initialize policy evaluator (if enabled) — cloud AND local modes
+        policy_evaluator = self._build_policy_evaluator()
 
         if self._is_async:
             return AsyncAnthropicTracedClient(
@@ -312,7 +338,7 @@ class AnthropicTracedClient:
         client: Any,
         config: ClyroConfig,
         transport: SyncTransport,
-        policy_evaluator: PolicyEvaluator | None,
+        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None,
         agent_id: UUID | None,
         org_id: UUID | None,
         framework_version: str | None,
@@ -516,21 +542,32 @@ class _TracedMessagesBase:
         session._step_number += 1
         if self._config.controls.enable_step_limit:
             if session.step_number > self._config.controls.max_steps:
-                raise StepLimitExceededError(
-                    limit=self._config.controls.max_steps,
-                    current_step=session.step_number,
-                    session_id=str(session.session_id),
-                )
+                # A10 dry-run: record a would-block and proceed (FRD-020/022).
+                if session.is_dry_run:
+                    session._emit_would_block(
+                        "step", f"step_{session.step_number}", dedup_key="step"
+                    )
+                else:
+                    raise StepLimitExceededError(
+                        limit=self._config.controls.max_steps,
+                        current_step=session.step_number,
+                        session_id=str(session.session_id),
+                    )
 
         # Cost limit  # Implements FRD-009
         if self._config.controls.enable_cost_limit:
             if float(session.cumulative_cost) >= self._config.controls.max_cost_usd:
-                raise CostLimitExceededError(
-                    limit_usd=self._config.controls.max_cost_usd,
-                    current_cost_usd=float(session.cumulative_cost),
-                    session_id=str(session.session_id),
-                    step_number=session.step_number,
-                )
+                if session.is_dry_run:  # A10 dry-run (FRD-020/022)
+                    session._emit_would_block(
+                        "cost", f"cost_{session.cumulative_cost}", dedup_key="cost"
+                    )
+                else:
+                    raise CostLimitExceededError(
+                        limit_usd=self._config.controls.max_cost_usd,
+                        current_cost_usd=float(session.cumulative_cost),
+                        session_id=str(session.session_id),
+                        step_number=session.step_number,
+                    )
 
         # Loop detection via Session's LoopDetector  # Implements FRD-010
         if self._config.controls.enable_loop_detection:
@@ -662,7 +699,7 @@ class TracedMessages(_TracedMessagesBase):
         original_messages: Any,
         config: ClyroConfig,
         transport: SyncTransport | Transport,
-        policy_evaluator: PolicyEvaluator | None,
+        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None,
         agent_id: UUID | None,
         org_id: UUID | None,
         framework_version: str | None,
@@ -1267,7 +1304,7 @@ class AsyncAnthropicTracedClient:
         client: Any,
         config: ClyroConfig,
         transport: Transport,
-        policy_evaluator: PolicyEvaluator | None,
+        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None,
         agent_id: UUID | None,
         org_id: UUID | None,
         framework_version: str | None,
@@ -1350,12 +1387,20 @@ class AsyncAnthropicTracedClient:
     def _buffer_event_sync(self, event: TraceEvent) -> None:
         """Synchronous event sink callback for session policy events.
 
-        Transport is async-only, so we append to the session's event list.
-        Events are picked up by the async buffer_event path on the next call.
+        Session.check_policy is sync, so this cannot await. It previously only
+        appended to ``session._events`` — the docstring claimed those were
+        "picked up by the async buffer_event path on the next call", but nothing
+        ever reads that list back, so every policy event (``policy_check`` in
+        enforce, ``would_block`` in dry_run) was silently dropped. Enforce mode
+        hid it: the raised PolicyViolationError made the block visible anyway.
+        In dry_run the marker IS the only output, so nothing reached the backend.
+
+        ``session.record_event`` already appended this event to ``_events``
+        before the sink ran, so the old append here was also a duplicate.
         """
         try:
-            if self._session is not None:
-                self._session._events.append(event)
+            if self._transport is not None:
+                self._transport.buffer_event_nowait(event)
         except Exception as e:
             if self._config.fail_open:
                 logger.warning("event_buffer_failed", error=str(e), fail_open=True)
@@ -1441,7 +1486,7 @@ class AsyncTracedMessages(_TracedMessagesBase):
         original_messages: Any,
         config: ClyroConfig,
         transport: Transport,
-        policy_evaluator: PolicyEvaluator | None,
+        policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None,
         agent_id: UUID | None,
         org_id: UUID | None,
         framework_version: str | None,

@@ -32,6 +32,7 @@ from uuid import UUID
 import httpx
 import structlog
 
+from clyro.dry_run import WouldBlockLatch, build_would_block_event, log_would_block
 from clyro.exceptions import PolicyViolationError
 from clyro.trace import EventType, TraceEvent
 
@@ -357,6 +358,10 @@ class PolicyEvaluator:
         self._client = PolicyClient(config)
         self._events: list[TraceEvent] = []
         self._disabled_reason: str | None = None
+        # A10 FRD-022: latch policy would-blocks per (session, rule, action) so a
+        # rule that trips on thousands of actions records ONE marker, not one per
+        # action. Bounded internally for a long-lived evaluator.
+        self._wb_latch = WouldBlockLatch()
 
         # Auto-detect approval handler:
         # - Explicit handler passed → use it
@@ -376,8 +381,16 @@ class PolicyEvaluator:
         self,
         action_type: str,
         parameters: dict[str, Any],
-    ) -> None:
+        session_id: UUID | None = None,
+    ) -> bool:
         """Evaluate local YAML policies as a pre-flight check before calling the backend.
+
+        Returns ``True`` only when, in dry_run, a matched local rule recorded a
+        would-block and the caller should **short-circuit** (skip the backend
+        evaluation) — mirroring how the enforce-mode local block short-circuits
+        by raising. Returns ``False`` (proceed to the backend) otherwise. This
+        prevents a second would_block being emitted by the backend path for the
+        same action (FRD-008 "exactly one").
 
         Loads rules from ~/.clyro/sdk/policies.yaml (same file used in
         local mode by SDKLocalPolicyEvaluator) and evaluates them with
@@ -406,7 +419,7 @@ class PolicyEvaluator:
         try:
             config = _lp.load_sdk_policies()
         except Exception:
-            return
+            return False
 
         all_rules: list[Any] = []
         if config.actions and action_type in config.actions:
@@ -418,7 +431,7 @@ class PolicyEvaluator:
         # NOT enforced at pre-flight in cloud mode. Defer to the backend.
         # If there are no local rules, simply skip pre-flight.
         if not all_rules:
-            return
+            return False
 
         for rule in all_rules:
             try:
@@ -433,7 +446,25 @@ class PolicyEvaluator:
                 action = getattr(rule, "action", "block")
 
                 if action == "allow":
-                    return  # short-circuit allow
+                    return False  # local allow → still defer to backend (cloud wins)
+
+                # A10 dry-run: a matched block / require_approval rule records a
+                # would-block and PROCEEDS — the mode gate sits BEFORE the approval
+                # handler because the handler does a blocking input() that would
+                # hang a background process (FRD-013). Implements FRD-003/013.
+                if self._config.controls.is_dry_run:
+                    would_be = "require_approval" if action == "require_approval" else "block"
+                    self._buffer_policy_would_block(
+                        action_type=action_type,
+                        would_be_outcome=would_be,
+                        rule_id=rule.policy_id or "local",
+                        rule_name=rule.name or f"{rule.operator}({rule.parameter})",
+                        parameters=parameters,
+                        session_id=session_id,
+                    )
+                    # Short-circuit like the enforce-mode block does — do NOT let
+                    # the backend path emit a second would_block for this action.
+                    return True
 
                 if action == "require_approval" and self._approval_handler is not None:
                     decision_obj = PolicyDecision(
@@ -447,7 +478,7 @@ class PolicyEvaluator:
                     except Exception:
                         approved = False
                     if approved:
-                        return  # short-circuit allow
+                        return False  # approved → defer to backend (cloud wins)
 
                 # action == "block" (or require_approval denied)
                 raise PolicyViolationError(
@@ -471,7 +502,7 @@ class PolicyEvaluator:
 
         # No local rule fired → defer to the backend's default_action.
         # (Local YAML default_action is intentionally NOT enforced in cloud mode.)
-        return
+        return False
 
     @property
     def is_enabled(self) -> bool:
@@ -507,8 +538,11 @@ class PolicyEvaluator:
         if not self.is_enabled:
             return PolicyDecision.allow()
 
-        # Check local YAML policies first — blocks before calling backend
-        self._check_local_policies(action_type, parameters)
+        # Check local YAML policies first — blocks before calling backend.
+        # In dry_run, a matched local rule records a would-block and short-circuits
+        # here (True) so the backend path does not emit a second one (FRD-008).
+        if self._check_local_policies(action_type, parameters, session_id):
+            return PolicyDecision.allow()
 
         start_time = time.perf_counter()
 
@@ -555,8 +589,11 @@ class PolicyEvaluator:
         if not self.is_enabled:
             return PolicyDecision.allow()
 
-        # Check local YAML policies first — blocks before calling backend
-        self._check_local_policies(action_type, parameters)
+        # Check local YAML policies first — blocks before calling backend.
+        # In dry_run, a matched local rule records a would-block and short-circuits
+        # here (True) so the backend path does not emit a second one (FRD-008).
+        if self._check_local_policies(action_type, parameters, session_id):
+            return PolicyDecision.allow()
 
         start_time = time.perf_counter()
 
@@ -653,7 +690,15 @@ class PolicyEvaluator:
         - require_approval: calls approval_handler if configured.
           If handler approves → passes through. If handler denies or
           no handler is configured → raises PolicyViolationError.
+
+        A10 dry-run: a block / require_approval decision PROCEEDS — without
+        raising and without invoking the approval handler (its blocking input()
+        would hang the agent — FRD-013). Implements FRD-003/013. The marker event
+        and its log line are emitted (and de-duplicated) by ``_emit_policy_event``.
         """
+        if not decision.is_allowed and self._config.controls.is_dry_run:
+            return
+
         if decision.is_blocked:
             raise PolicyViolationError(
                 rule_id=decision.rule_id or "unknown",
@@ -731,7 +776,30 @@ class PolicyEvaluator:
         session_id: UUID | None,
         step_number: int | None,
     ) -> None:
-        """Create and buffer a POLICY_CHECK event for the audit trail."""
+        """Create and buffer the audit event for this decision.
+
+        A10: in dry_run a would-be block / require_approval is buffered as a
+        distinct ``would_block`` marker, **latched per (session, rule, action)**
+        so a rule that trips on thousands of actions records ONE marker instead
+        of one per action (FRD-022 extended to the non-sticky policy check —
+        otherwise a dry-run agent would burn the org's trace quota and bloat the
+        report with near-identical rows). The FRD-011 log line is emitted here,
+        with the event, so both de-duplicate together.
+        """
+        if self._config.controls.is_dry_run and not decision.is_allowed:
+            key = WouldBlockLatch.policy_key(
+                session_id, decision.rule_id, action_type, decision.decision
+            )
+            if not self._wb_latch.record(key):
+                return  # repeat of an already-recorded reason — counted only
+            self._events.append(
+                self.create_policy_check_event(
+                    decision, action_type, parameters, session_id, step_number
+                )
+            )
+            log_would_block("policy", action_type, decision.decision, decision.rule_id)
+            return
+
         event = self.create_policy_check_event(
             decision,
             action_type,
@@ -747,6 +815,49 @@ class PolicyEvaluator:
         self._events.clear()
         return events
 
+    def _buffer_policy_would_block(
+        self,
+        action_type: str,
+        would_be_outcome: str,
+        rule_id: str | None,
+        rule_name: str | None,
+        parameters: dict[str, Any],
+        session_id: UUID | None = None,
+        step_number: int | None = None,
+    ) -> None:
+        """Buffer a policy would-block marker for the local pre-flight path.
+
+        Implements FRD-008/017/022. The cloud path emits the marker via
+        ``_emit_policy_event``; the local YAML pre-flight has no such emit, so it
+        records the marker here (+ the FRD-011 log line). The event drains through
+        ``check_policy`` like a policy_check but is ``event_type=would_block``
+        (never counted as an enforced check).
+
+        Latched per (session, rule, action_type): a rule that trips on thousands
+        of actions records ONE marker; repeats are counted, not re-emitted.
+        """
+        from uuid import uuid4
+
+        key = WouldBlockLatch.policy_key(session_id, rule_id, action_type, would_be_outcome)
+        if not self._wb_latch.record(key):
+            return  # repeat of an already-recorded reason — counted only
+
+        event = build_would_block_event(
+            session_id=session_id or uuid4(),
+            agent_id=self._agent_id,
+            check_type="policy",
+            action=action_type,
+            would_be_outcome=would_be_outcome,  # type: ignore[arg-type]
+            rule_id=rule_id,
+            rule_name=rule_name,
+            input_data={"action_type": action_type, "parameters": parameters},
+            extra_metadata={"action_type": action_type},
+        )
+        if step_number is not None:
+            event.step_number = step_number
+        self._events.append(event)
+        log_would_block("policy", action_type, would_be_outcome, rule_id)  # type: ignore[arg-type]
+
     def create_policy_check_event(
         self,
         decision: PolicyDecision,
@@ -756,7 +867,14 @@ class PolicyEvaluator:
         step_number: int | None = None,
     ) -> TraceEvent:
         """
-        Create a POLICY_CHECK trace event for the audit trail.
+        Create a policy audit trace event.
+
+        In ``enforce`` mode (or for an ``allow`` decision) this is a
+        ``POLICY_CHECK`` event exactly as before. In ``dry_run`` mode, a
+        block / require_approval decision is instead recorded as a distinct
+        ``event_type=would_block`` marker (FRD-008) so no enforced aggregation
+        counts it — an ``allow`` decision stays a normal ``policy_check(allow)``
+        so AGS's "passed" count is unaffected.
 
         Args:
             decision: Result of policy evaluation
@@ -766,9 +884,31 @@ class PolicyEvaluator:
             step_number: Current step number
 
         Returns:
-            TraceEvent with type POLICY_CHECK
+            TraceEvent with type POLICY_CHECK (or WOULD_BLOCK in dry_run)
         """
         from uuid import uuid4
+
+        # A10 dry-run: a would-be block / require_approval becomes a would_block
+        # marker; allow stays a normal policy_check. Implements FRD-008/017.
+        if self._config.controls.is_dry_run and not decision.is_allowed:
+            event = build_would_block_event(
+                session_id=session_id or uuid4(),
+                agent_id=self._agent_id,
+                check_type="policy",
+                action=action_type,
+                would_be_outcome=decision.decision,  # type: ignore[arg-type]
+                rule_id=decision.rule_id,
+                rule_name=decision.rule_name,
+                input_data={"action_type": action_type, "parameters": parameters},
+                extra_metadata={
+                    "action_type": action_type,
+                    "message": decision.message,
+                    "evaluated_rules": decision.evaluated_rules,
+                },
+            )
+            if step_number is not None:
+                event.step_number = step_number
+            return event
 
         metadata: dict[str, Any] = {
             "decision": decision.decision,

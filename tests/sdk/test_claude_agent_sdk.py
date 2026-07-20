@@ -1174,6 +1174,65 @@ class TestClaudeAgentAdapter:
         assert event.error_type == "ValueError"
         assert event.error_message == "something went wrong"
 
+    def test_after_call_resolves_model_from_options(self, config, session):
+        """FRD-012: model comes from agent.options.model, into event_name + input_data.
+
+        The synthesized llm_call must carry the real model so the backend derives the
+        model column. The model lives on ClaudeAgentOptions (agent.options.model), not
+        directly on the wrapped agent.
+        """
+        from clyro.adapters.claude_agent_sdk import ClaudeAgentAdapter
+
+        class _AgentWithOptions:
+            def __init__(self, options):
+                self.options = options
+
+        agent = _AgentWithOptions(MockClaudeAgentOptions(model="claude-sonnet-4-6"))
+        event = ClaudeAgentAdapter(agent, config).after_call(
+            session, "result", {"start_time": 0.0}
+        )
+        assert event.event_name == "claude-sonnet-4-6"
+        assert event.input_data["model"] == "claude-sonnet-4-6"
+
+    def test_after_call_resolves_model_from_options_object_directly(self, config, session):
+        """Wrapping the ClaudeAgentOptions object itself still resolves the model."""
+        from clyro.adapters.claude_agent_sdk import ClaudeAgentAdapter
+
+        options = MockClaudeAgentOptions(model="claude-opus-4-1")
+        event = ClaudeAgentAdapter(options, config).after_call(
+            session, "result", {"start_time": 0.0}
+        )
+        assert event.event_name == "claude-opus-4-1"
+        assert event.input_data["model"] == "claude-opus-4-1"
+
+    def test_after_call_resolves_model_from_bound_method(self, config, session):
+        """clyro.wrap(agent._run): model resolved via the bound method's __self__.options."""
+        from clyro.adapters.claude_agent_sdk import ClaudeAgentAdapter
+
+        class _Client:
+            def __init__(self, options):
+                self.options = options
+
+            def run(self):
+                return None
+
+        client = _Client(MockClaudeAgentOptions(model="claude-haiku-4-5"))
+        event = ClaudeAgentAdapter(client.run, config).after_call(
+            session, "result", {"start_time": 0.0}
+        )
+        assert event.event_name == "claude-haiku-4-5"
+        assert event.input_data["model"] == "claude-haiku-4-5"
+
+    def test_after_call_model_none_when_absent(self, config, session):
+        """No options/model anywhere → model is None (backend buckets as 'unknown')."""
+        from clyro.adapters.claude_agent_sdk import ClaudeAgentAdapter
+
+        event = ClaudeAgentAdapter(lambda: None, config).after_call(
+            session, "result", {"start_time": 0.0}
+        )
+        assert event.event_name is None
+        assert event.input_data["model"] is None
+
 
 # =============================================================================
 # TestInstrumentClaudeAgent (Public API)

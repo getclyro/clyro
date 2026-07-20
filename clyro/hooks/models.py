@@ -78,3 +78,9 @@ class SessionState(BaseModel):
     turn_start_step_count: int = 0
     turn_start_cost_usd: float = 0.0
     last_pre_tool_event_id: str | None = None
+    # A10 FRD-022: reasons already recorded as would-blocks in this dry-run
+    # session. Hooks run as a short-lived CLI per tool call, so an in-memory latch
+    # would not survive between calls — the de-dup state must persist here with
+    # the rest of the session. Bounded (see _WOULD_BLOCK_KEYS_MAX) so a long
+    # session cannot grow the state file without limit.
+    would_block_keys: list[str] = Field(default_factory=list)

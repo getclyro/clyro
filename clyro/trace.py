@@ -41,6 +41,10 @@ class EventType(StrEnum):
     POLICY_CHECK = "policy_check"
     ERROR = "error"
     STEP = "step"
+    # A10 dry-run: a would-have-enforced decision recorded but NOT acted on.
+    # Kept distinct from POLICY_CHECK so every enforced aggregation excludes it
+    # by construction (never written to policy_violations). Implements FRD-008.
+    WOULD_BLOCK = "would_block"
 
 
 class Framework(StrEnum):

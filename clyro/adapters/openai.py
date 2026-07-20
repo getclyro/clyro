@@ -314,7 +314,13 @@ class OpenAIAdapter:
         if not self._config.controls.enable_policy_enforcement:
             return None
         if self._config.mode == "local":
-            return SDKLocalPolicyEvaluator(approval_handler=self._approval_handler)
+            # A10 FRD-020 (A5): thread the resolved dry-run mode so the OpenAI
+            # local policy path records-and-proceeds instead of raising in
+            # dry_run — without this, dry-run silently still blocks on OpenAI.
+            return SDKLocalPolicyEvaluator(
+                approval_handler=self._approval_handler,
+                dry_run=self._config.controls.is_dry_run,
+            )
         if self._config.api_key:
             return PolicyEvaluator(
                 config=self._config,
@@ -722,11 +728,15 @@ class TracedCompletions:
         session._step_number += 1
         step = session.step_number
         if controls.enable_step_limit and step > controls.max_steps:
-            raise StepLimitExceededError(
-                limit=controls.max_steps,
-                current_step=step,
-                session_id=str(session.session_id),
-            )
+            # A10 dry-run: record a would-block and proceed (FRD-020/022).
+            if session.is_dry_run:
+                session._emit_would_block("step", f"step_{step}", dedup_key="step")
+            else:
+                raise StepLimitExceededError(
+                    limit=controls.max_steps,
+                    current_step=step,
+                    session_id=str(session.session_id),
+                )
         return step
 
     def _check_prevention_stack(self, session: Session, kwargs: dict[str, Any]) -> int:
@@ -740,12 +750,17 @@ class TracedCompletions:
         controls = self._config.controls
         llm_step = self._next_step(session)
         if controls.enable_cost_limit and float(session.cumulative_cost) >= controls.max_cost_usd:
-            raise CostLimitExceededError(
-                limit_usd=controls.max_cost_usd,
-                current_cost_usd=float(session.cumulative_cost),
-                session_id=str(session.session_id),
-                step_number=llm_step,
-            )
+            if session.is_dry_run:  # A10 dry-run (FRD-020/022)
+                session._emit_would_block(
+                    "cost", f"cost_{session.cumulative_cost}", dedup_key="cost"
+                )
+            else:
+                raise CostLimitExceededError(
+                    limit_usd=controls.max_cost_usd,
+                    current_cost_usd=float(session.cumulative_cost),
+                    session_id=str(session.session_id),
+                    step_number=llm_step,
+                )
         if controls.enable_loop_detection:
             state = self._build_loop_state(kwargs)
             if state is not None:
@@ -759,9 +774,21 @@ class TracedCompletions:
 
         Records the ERROR audit event, flushes the turn, and raises
         CostLimitExceededError before this turn's tool calls are emitted/run.
+
+        A10 dry-run (FRD-020/022): record a would-block and proceed instead. This
+        is the site that actually fires — cost crosses the limit while recording
+        *this* call's usage, so the post-call check trips before the next turn's
+        pre-call check ever runs. Missing the gate here made dry_run still block
+        on cost, and emitted an enforced ``error`` sibling that FRD-017 forbids.
+
+        Shares ``dedup_key="cost"`` with the pre-call check so a session that
+        crosses the limit records exactly ONE marker across both sites.
         """
         controls = self._config.controls
         if not controls.enable_cost_limit or float(session.cumulative_cost) < controls.max_cost_usd:
+            return
+        if session.is_dry_run:
+            session._emit_would_block("cost", f"cost_{session.cumulative_cost}", dedup_key="cost")
             return
         err = CostLimitExceededError(
             limit_usd=controls.max_cost_usd,
@@ -1496,10 +1523,21 @@ class AsyncOpenAITracedClient:
         return self._session
 
     def _buffer_event_sync(self, event: TraceEvent) -> None:
-        """Sync event sink for session policy events (appends to the session)."""
+        """Sync event sink for session policy events — buffers to the transport.
+
+        Session.check_policy is sync, so this cannot await. It previously only
+        appended to ``session._events``, which nothing ever drains — so every
+        policy event (``policy_check`` in enforce, ``would_block`` in dry_run)
+        was silently dropped on the async client. Enforce mode hid it: the raised
+        PolicyViolationError made the block visible anyway. In dry_run the marker
+        IS the only output, so nothing reached the dashboard.
+
+        ``session.record_event`` already appended this event to ``_events``
+        before the sink ran, so the old append here was also a duplicate.
+        """
         try:
-            if self._session is not None:
-                self._session._events.append(event)
+            if self._transport is not None:
+                self._transport.buffer_event_nowait(event)
         except Exception as e:
             if self._config.fail_open:
                 logger.warning("event_buffer_failed", error=str(e), fail_open=True)

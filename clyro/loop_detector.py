@@ -205,6 +205,38 @@ class LoopDetector:
             logger.debug("state_hash_computation_failed", error=str(e))
             return None
 
+    # Upper bound on distinct state hashes retained (FRD-021 memory-safety fix).
+    # A genuine tight loop repeats the *same* hash, so its count grows and it is
+    # never evicted; only the long tail of once-seen states is pruned. Without
+    # this, a dry-run agent that never stops would grow the dict unbounded (OOM).
+    _MAX_STATE_HASHES = 50_000
+
+    def _prune_state_hashes(self) -> None:
+        """Evict low-count state hashes to keep ``state_hash_counts`` bounded.
+
+        Drops every hash still below the loop threshold (these cannot trigger a
+        loop yet and are the bulk of a many-distinct-states run). High-count
+        hashes — the only ones that can signal a loop — are always retained, so a
+        genuine tight loop is never missed. Implements FRD-021 (pairs with the
+        absolute ceiling).
+
+        Applies in ALL modes (enforce and dry_run): it only engages past
+        ``_MAX_STATE_HASHES`` distinct states, so ordinary runs are unaffected;
+        for a huge, spread-out run it may reset a near-threshold pattern that
+        spanned a prune — an accepted trade for bounding memory.
+        """
+        counts = self._state.state_hash_counts
+        if len(counts) <= self._MAX_STATE_HASHES:
+            return
+        below = [h for h, c in counts.items() if c < self.threshold]
+        for h in below:
+            del counts[h]
+        logger.debug(
+            "loop_detector_state_pruned",
+            pruned=len(below),
+            retained=len(counts),
+        )
+
     def _check_state_loop(self, state_hash: str) -> LoopSignal | None:
         """
         Check if a state hash indicates a loop.
@@ -219,6 +251,9 @@ class LoopDetector:
             self._state.state_hash_counts.get(state_hash, 0) + 1
         )
         count = self._state.state_hash_counts[state_hash]
+        # Bound memory before the dict can grow without limit (FRD-021).
+        if len(self._state.state_hash_counts) > self._MAX_STATE_HASHES:
+            self._prune_state_hashes()
 
         self._state.recent_states.append(state_hash)
 

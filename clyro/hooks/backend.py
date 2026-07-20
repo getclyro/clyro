@@ -300,6 +300,18 @@ def _derive_agent_stage(event_type: str) -> str:
     return "think"
 
 
+# A10: process-level dry-run flag. Hooks run as a short-lived CLI per tool call,
+# so a module global set once at start is the simplest correct carrier for the
+# FRD-018 session marker across every create_trace_event call. Implements FRD-018.
+_DRY_RUN: bool = False
+
+
+def set_dry_run(value: bool) -> None:
+    """Set the process-level dry-run flag for this hook invocation (FRD-018)."""
+    global _DRY_RUN
+    _DRY_RUN = value
+
+
 def create_trace_event(
     event_type: str,
     session_id: str,
@@ -342,6 +354,11 @@ def create_trace_event(
         merged_meta["tool_name"] = tool_name
     if truncated:
         merged_meta["output_truncated"] = True
+    # A10 FRD-018: stamp the session-level dry_run marker on every hook event so
+    # the backend excludes the whole session (drift / ARI / cost). Set once per
+    # process by set_dry_run() — hooks run as short-lived per-invocation CLIs.
+    if _DRY_RUN:
+        merged_meta["dry_run"] = True
 
     return {
         "event_id": str(uuid4()),
