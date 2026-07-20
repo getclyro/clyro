@@ -1,6 +1,6 @@
-# Clyro MCP Wrapper — Usage Guide
+# Clyro MCP Wrapper: Usage Guide
 
-A transparent governance proxy for MCP servers. It sits between your AI host (Claude Desktop, Cursor, Continue, any MCP client) and your MCP server — enforcing policies, tracking costs, detecting loops, and syncing traces to Clyro — without any changes to either side.
+A transparent governance proxy for MCP servers. It sits between your AI host (Claude Desktop, Cursor, Continue, any MCP client) and your MCP server (enforcing policies, tracking costs, detecting loops, and syncing traces to Clyro) without any changes to either side.
 
 ```
 [AI Host]  ←─ stdio ─→  [clyro-mcp wrap]  ←─ stdio ─→  [Real MCP Server]
@@ -175,7 +175,7 @@ The `--config` flag points to a YAML file where you define governance policies, 
 
 ### Custom Python MCP servers
 
-If you built your own MCP server in Python, the wrapper works the same way — just change the launch command in your host config.
+If you built your own MCP server in Python, the wrapper works the same way: just change the launch command in your host config.
 
 > **Note:** The examples below use the bare `clyro-mcp` command, which works in terminal sessions. If you're using these snippets in a GUI app config (VS Code, Claude Desktop, Cursor), replace `clyro-mcp` with the full path (see [Finding the full path](#finding-the-full-path-to-clyro-mcp)).
 
@@ -294,12 +294,13 @@ clyro-mcp wrap npx @modelcontextprotocol/server-filesystem /home/user/projects
 ## CLI Reference
 
 ```
-clyro-mcp wrap <server-command> [--config <path>]
+clyro-mcp wrap <server-command> [--config <path>] [--dry-run]
 
 Arguments:
   server-command        The full MCP server command and its arguments
   --config, -c <path>   Path to YAML config file
                         (default: ~/.clyro/mcp-wrapper/mcp-config.yaml)
+  --dry-run             Evaluate every check but never block. See "Dry-Run Mode".
 ```
 
 ---
@@ -310,6 +311,7 @@ Arguments:
 |---|---|
 | `CLYRO_API_KEY` | Clyro API key. Required for cloud tracing and policy sync. |
 | `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyro.dev` |
+| `CLYRO_DRY_RUN` | Run in monitor-only mode; every check evaluates, nothing is blocked. See [Dry-Run Mode](#dry-run-mode). |
 
 Without `CLYRO_API_KEY` the wrapper runs in local-only mode: governance still applies, audit logs are written locally, but no data is sent to Clyro.
 
@@ -342,7 +344,7 @@ global:
     threshold: 3           # Block if the same call repeats ≥ N times
     window: 10             # ...within the last M calls
 
-  policies:                # Global rules — applied to every tool call
+  policies:                # Global rules, applied to every tool call
     - name: "Max $1000 per transaction"
       parameter: "amount"
       operator: "max_value"  # matches when amount > 1000
@@ -374,8 +376,8 @@ audit:
 
 backend:
   agent_name: "my-agent"               # Optional. Default: derived from server command
-  sync_interval_seconds: 10            # How often to flush events to cloud (1–300)
-  pending_queue_max_mb: 20             # Max disk buffer before dropping events (1–100)
+  sync_interval_seconds: 10            # How often to flush events to cloud (1-300)
+  pending_queue_max_mb: 20             # Max disk buffer before dropping events (1-100)
   # api_key: "your-clyro-api-key"            # Prefer CLYRO_API_KEY env var instead
 ```
 
@@ -400,7 +402,7 @@ The `parameter` field supports dot-notation for nested keys (`user.id`) and wild
 
 When the wrapper is cloud-connected (`backend.api_key` set), each fetched cloud
 policy's own `default_action` is merged into the wrapper using
-**cloud-wins** precedence — when any cloud policy declared a `default_action`,
+**cloud-wins** precedence: when any cloud policy declared a `default_action`,
 it overrides the wrapper's local default. Among multiple cloud defaults, the
 most-restrictive (`block` over `allow`) wins. The local default applies only
 when no cloud policies were fetched. This survives the per-session cache TTL
@@ -471,7 +473,62 @@ Config values are resolved in this order (first wins):
 }
 ```
 
-No `CLYRO_API_KEY` env var needed — the `api_key` in the YAML file is used instead.
+No `CLYRO_API_KEY` env var needed; the `api_key` in the YAML file is used instead.
+
+---
+
+## Dry-Run Mode
+
+Run the full governance stack without enforcing it. Every check still evaluates and records what it *would* have blocked, but no tool call is ever stopped. Use it to validate a new config against real traffic before turning enforcement on.
+
+Set `dry_run` at the **top level** of the config: it is a sibling of `global:`, `tools:`, `backend:`, and `audit:`, not a key inside them:
+
+```yaml
+default_action: allow
+dry_run: true              # top level, monitor only, nothing is blocked
+
+global:
+  max_steps: 100
+  max_cost_usd: 20.0
+
+tools: {}
+```
+
+Or without editing the config at all:
+
+```
+clyro-mcp wrap --dry-run --config governance.yaml -- python my_server.py
+```
+
+### Enabling and precedence
+
+| Source | Notes |
+|---|---|
+| `--dry-run` flag | Highest precedence. Wins over env var and config. |
+| `CLYRO_DRY_RUN` env var | Truthy values are exactly `true`, `1`, `yes`, `on`, `dry_run` (case-insensitive). Any **other** value that is set resolves to enforce; a typo cannot silently disable enforcement. Unset falls through to the config file. |
+| `dry_run:` in config | Lowest precedence. |
+
+So the resolution order is `--dry-run` > `CLYRO_DRY_RUN` > config file.
+
+### What you see
+
+A banner is printed once at startup, then one WARNING line per distinct finding:
+
+```
+CLYRO-DRYRUN active — enforcement suppressed (mode=dry_run)
+CLYRO-DRYRUN would-have-blocked  action=…  check=…  rule=…  would_be=block
+```
+
+Each finding is also recorded as a trace event with `event_type="would_block"`, de-duplicated to one marker per distinct reason (session + rule + action type + outcome): a rule that trips on 500 tool calls records one event, not 500.
+
+### What dry-run does not suppress
+
+- **Absolute ceilings** (`absolute_max_steps`, `absolute_max_cost_usd`) still raise in dry-run. They are the runaway-agent backstop and cannot be disabled.
+- **Approval handlers are skipped.** A `require_approval` policy records a marker and proceeds; the approval handler is never invoked, so an unattended run cannot hang waiting on a prompt.
+
+Dry-run events are excluded from all analytics read paths: Reliability Score, drift detection, and dashboards, so a monitor-mode session never moves your metrics.
+
+Full guide: [Dry-Run Mode](https://docs.clyro.dev/docs/concepts/dry-run-mode).
 
 ---
 
@@ -493,14 +550,14 @@ Your agent talks to `clyro-mcp wrap` as if it were the real server. The wrapper 
 
 | Mode | How tools are loaded | Subprocess lifecycle | Governance session |
 |---|---|---|---|
-| **Persistent** (recommended) | `client.session()` + `load_mcp_tools(session)` | One subprocess for the entire invocation | Single session — step counts, loop detection, and cost tracking work correctly |
-| **Ephemeral** | `client.get_tools()` | New subprocess spawned per tool call | New session per call — step/loop/cost counters reset each time |
+| **Persistent** (recommended) | `client.session()` + `load_mcp_tools(session)` | One subprocess for the entire invocation | Single session; step counts, loop detection, and cost tracking work correctly |
+| **Ephemeral** | `client.get_tools()` | New subprocess spawned per tool call | New session per call; step/loop/cost counters reset each time |
 
 Use **persistent sessions** when you need governance to track the full invocation as a single session (step limits, loop detection, cost budgets). Use **ephemeral sessions** when tool calls are independent and you don't need cross-call governance tracking.
 
 ### Step 1: Point the client at the wrapper
 
-This is the same regardless of session mode — just change the `command` and `args`:
+This is the same regardless of session mode; just change the `command` and `args`:
 
 **Before (direct):**
 
@@ -612,13 +669,13 @@ async def invoke(user_query: str):
 
 ## What happens when a tool call is blocked
 
-The wrapper returns a JSON-RPC error to the host instead of forwarding the call to the server. The host sees a clean error response — the server is never invoked. All blocked calls are logged locally and synced to Clyro if an API key is configured.
+The wrapper returns a JSON-RPC error to the host instead of forwarding the call to the server. The host sees a clean error response; the server is never invoked. All blocked calls are logged locally and synced to Clyro if an API key is configured.
 
 Blocking reasons:
-- **Loop detected** — same tool+args repeated ≥ threshold times in window
-- **Step limit** — session has exceeded `max_steps` total tool calls
-- **Cost budget** — estimated cost would exceed `max_cost_usd`
-- **Policy violation** — a parameter rule matched
+- **Loop detected**: same tool+args repeated ≥ threshold times in window
+- **Step limit**: session has exceeded `max_steps` total tool calls
+- **Cost budget**: estimated cost would exceed `max_cost_usd`
+- **Policy violation**: a parameter rule matched
 
 ---
 
@@ -647,7 +704,7 @@ Each line is a JSON event. The log is created with `0600` permissions (owner-rea
 
 ## Failure behavior
 
-The wrapper is fail-open. If Clyro's backend is unreachable, tool calls are not blocked — they proceed normally. Events are queued to disk and retried on the next sync interval. Local audit logging continues regardless of backend status.
+The wrapper is fail-open. If Clyro's backend is unreachable, tool calls are not blocked; they proceed normally. Events are queued to disk and retried on the next sync interval. Local audit logging continues regardless of backend status.
 
 ---
 
