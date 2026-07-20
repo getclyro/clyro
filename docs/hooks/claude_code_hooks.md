@@ -1,6 +1,6 @@
-# Clyro Claude Code Hooks — Usage Guide
+# Clyro Claude Code Hooks: Usage Guide
 
-A governance layer for Claude Code (Anthropic's CLI). It hooks into Claude Code's tool-call lifecycle to enforce policies, track costs, detect loops, and sync traces to Clyro — without modifying Claude Code itself.
+A governance layer for Claude Code (Anthropic's CLI). It hooks into Claude Code's tool-call lifecycle to enforce policies, track costs, detect loops, and sync traces to Clyro, without modifying Claude Code itself.
 
 ```
 [Claude Code]
@@ -14,7 +14,7 @@ A governance layer for Claude Code (Anthropic's CLI). It hooks into Claude Code'
 [clyro-hook trace --event session-end]     ← Stop: session summary, event flush
 ```
 
-Each hook invocation is an **ephemeral process** — no background daemons or long-lived connections. All state is persisted to disk as JSON files.
+Each hook invocation is an **ephemeral process**: no background daemons or long-lived connections. All state is persisted to disk as JSON files.
 
 ---
 
@@ -211,7 +211,7 @@ Multiple hook entries in the same lifecycle phase run in order. If an earlier ho
 | Cost budget | Estimated accumulated cost exceeds budget | $10.00 |
 | Policy rules | Tool parameters match a block rule | No rules (permissive) |
 
-All four checks run on every `PreToolUse` invocation, in that order. The first check that triggers a block stops evaluation — the tool call is rejected and Claude Code sees the reason.
+All four checks run on every `PreToolUse` invocation, in that order. The first check that triggers a block stops evaluation; the tool call is rejected and Claude Code sees the reason.
 
 ---
 
@@ -222,9 +222,9 @@ All four checks run on every `PreToolUse` invocation, in that order. The first c
 | `session_start` | First tool call of a session (or after a turn restart) |
 | `pre_tool_use` | Every PreToolUse evaluation (allow or block) |
 | `policy_check` | Governance decision with individual rule results |
-| `tool_call_observe` | PostToolUse — actual cost, duration, output summary |
+| `tool_call_observe` | PostToolUse; actual cost, duration, output summary |
 | `error` | When a tool call is blocked (linked to parent policy_check) |
-| `session_end` | Stop hook — session totals (steps, cost, duration) |
+| `session_end` | Stop hook; session totals (steps, cost, duration) |
 
 Events are queued to disk during the session and flushed in a single batch at session-end.
 
@@ -260,7 +260,7 @@ global:
     threshold: 3             # Block if same tool+args repeated this many times
     window: 10               # Within the most recent N tool calls
 
-  # Global policies — evaluated for ALL tools.
+  # Global policies, evaluated for ALL tools.
   # Each rule MUST declare its action (block | allow | require_approval).
   policies:
     - name: "Block recursive force delete"
@@ -360,6 +360,7 @@ tools:
 |---|---|
 | `CLYRO_API_KEY` | Clyro API key. Required for cloud tracing and policy sync. |
 | `CLYRO_API_URL` | Override the backend URL. Default: `https://api.clyro.dev` |
+| `CLYRO_DRY_RUN` | Run in monitor-only mode; every check evaluates, nothing is blocked. See [Dry-Run Mode](#dry-run-mode). |
 
 Environment variables override values in the config file.
 
@@ -387,6 +388,62 @@ Handles post-tool-use cost correction and session-end lifecycle. Always exits 0.
 | `trace --event tool-complete` | Record tool result and correct cost (PostToolUse hook) |
 | `trace --event session-end` | Flush events, write summary, clean up (Stop hook) |
 | `--config, -c <path>` | Path to YAML config file. Default: `~/.clyro/hooks/claude-code-policy.yaml` |
+
+---
+
+## Dry-Run Mode
+
+Run the full prevention stack without enforcing it. Every stage still evaluates and records what it *would* have blocked, but no tool call is ever stopped. Use it to validate a new policy file against a real Claude Code session before turning enforcement on.
+
+Set `dry_run` at the **top level** of the hooks config: it is a sibling of `global:`, `tools:`, `backend:`, and `audit:`, not a key inside them:
+
+```yaml
+default_action: allow
+dry_run: true              # top level, monitor only, nothing is blocked
+
+global:
+  max_steps: 50
+  max_cost_usd: 10.0
+```
+
+Or without editing the config at all:
+
+```bash
+CLYRO_DRY_RUN=true claude
+```
+
+### Enabling and precedence
+
+| Source | Notes |
+|---|---|
+| `CLYRO_DRY_RUN` env var | Truthy values are exactly `true`, `1`, `yes`, `on`, `dry_run` (case-insensitive). Any **other** value that is set resolves to enforce; a typo cannot silently disable enforcement. Unset falls through to the config file. |
+| `dry_run:` in config | Used when the env var is unset. |
+
+The full precedence chain across Clyro surfaces is `--dry-run` > `CLYRO_DRY_RUN` > config file.
+
+### What you see
+
+A banner is printed once at startup, then one WARNING line per distinct finding (both visible in Claude Code's hook output on stderr):
+
+```
+CLYRO-DRYRUN active — enforcement suppressed (mode=dry_run)
+CLYRO-DRYRUN would-have-blocked  action=…  check=…  rule=…  would_be=block
+```
+
+Each finding is also recorded as a trace event with `event_type="would_block"`, de-duplicated to one marker per distinct reason (session + rule + action type + outcome): a rule that trips on 500 tool calls records one event, not 500.
+
+### What dry-run does not suppress
+
+- **Absolute ceilings** (`absolute_max_steps`, `absolute_max_cost_usd`) still raise in dry-run. They are the runaway-agent backstop and cannot be disabled.
+- **Approval handlers are skipped.** A `require_approval` policy records a marker and proceeds; the approval handler is never invoked, so an unattended run cannot hang waiting on a prompt.
+
+Dry-run events are excluded from all analytics read paths: Reliability Score, drift detection, and dashboards, so a monitor-mode session never moves your metrics.
+
+### Failure behavior in dry-run
+
+In dry-run, a failure inside the governance stack (for example an unreadable config file) resolves to **allow** rather than the normal fail-closed behavior. Monitor mode never becomes a reason a tool call is stopped.
+
+Full guide: [Dry-Run Mode](https://docs.clyro.dev/docs/concepts/dry-run-mode).
 
 ---
 
@@ -426,10 +483,10 @@ Evaluates local YAML policies merged with cloud policies (if configured). Tool i
 
 When `CLYRO_API_KEY` is set, the hook connects to the Clyro backend for:
 
-- **Agent registration** — Registers the hook as an agent in the Clyro dashboard. Falls back to a deterministic UUID if the backend is unreachable.
-- **Cloud policy sync** — Fetches policies defined in the Clyro dashboard and merges them with local YAML policies. Cached with a configurable TTL (default: 300 seconds).
-- **Trace event delivery** — Events queued during the session are flushed in a single batch at session-end.
-- **Violation reporting** — Blocked tool calls are reported with full context (rule name, operator, expected vs actual values).
+- **Agent registration**: Registers the hook as an agent in the Clyro dashboard. Falls back to a deterministic UUID if the backend is unreachable.
+- **Cloud policy sync**: Fetches policies defined in the Clyro dashboard and merges them with local YAML policies. Cached with a configurable TTL (default: 300 seconds).
+- **Trace event delivery**: Events queued during the session are flushed in a single batch at session-end.
+- **Violation reporting**: Blocked tool calls are reported with full context (rule name, operator, expected vs actual values).
 
 All backend calls are protected by a **circuit breaker** (5 failures → open, 30s cooldown → half-open, 2 successes → closed). The circuit breaker state is persisted in the session file.
 
@@ -553,7 +610,7 @@ global:
 
 ## Failure Behavior
 
-The hook is **fail-open**. If the config file is missing, session state is corrupted, the cloud backend is unreachable, or any internal error occurs — the tool call is **allowed to proceed**. Errors are logged to stderr (visible in Claude Code's hook output) and exit code 1 is returned, which Claude Code treats as a non-blocking result.
+The hook is **fail-open**. If the config file is missing, session state is corrupted, the cloud backend is unreachable, or any internal error occurs, the tool call is **allowed to proceed**. Errors are logged to stderr (visible in Claude Code's hook output) and exit code 1 is returned, which Claude Code treats as a non-blocking result.
 
 This means:
 - A misconfigured policy file never breaks your Claude Code workflow.

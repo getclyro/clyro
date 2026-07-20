@@ -1,7 +1,7 @@
 # Copyright 2026 Clyro Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-# Clyro SDK — AI Agent Governance
+# Clyro SDK: AI Agent Governance
 # Implements PRD-001, PRD-002, FRD-009 (unified package), NFR-001 (lazy imports)
 
 """
@@ -75,7 +75,7 @@ __all__ = [
 
 
 # NFR-001: Lazy import strategy for subpackages.
-# clyro.mcp and clyro.hooks are NOT eagerly loaded — they are loaded
+# clyro.mcp and clyro.hooks are NOT eagerly loaded: they are loaded
 # only when accessed via attribute lookup. This preserves the <200ms
 # hook import budget and prevents cross-loading.
 def __getattr__(name: str):
