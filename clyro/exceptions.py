@@ -213,6 +213,45 @@ class LoopDetectedError(ExecutionControlError):
         self.state_hash = state_hash
 
 
+class AbsoluteCeilingExceededError(ExecutionControlError):
+    """
+    Agent exceeded the absolute (hard) safety ceiling.
+
+    Implements FRD-021 (A10 dry-run). This ceiling is non-disableable: it fires
+    even in ``dry_run`` mode and even when the soft ``enable_*`` limits are off,
+    bounding the "dry-run stops nothing" footgun so a genuine unbounded loop or
+    runaway cost cannot run forever during a trial. It is set far above the
+    normal configurable maxima, so it never fires in ordinary use.
+
+    Subclasses :class:`ExecutionControlError` so existing ``except
+    ExecutionControlError`` handling still stops the agent — but dry-run
+    record-then-allow branches deliberately do NOT convert it to allow.
+    """
+
+    def __init__(
+        self,
+        limit: float,
+        current: float,
+        dimension: str,
+        session_id: str | None = None,
+        step_number: int | None = None,
+        details: dict[str, Any] | None = None,
+    ):
+        message = (
+            f"Absolute {dimension} ceiling exceeded: {current} "
+            f"(ceiling: {limit}) — hard stop, not disableable by dry_run"
+        )
+        details = details or {}
+        details.update(
+            {"limit": limit, "current": current, "dimension": dimension, "absolute_ceiling": True}
+        )
+        super().__init__(message, session_id, step_number, details)
+        self.limit = limit
+        self.current = current
+        self.dimension = dimension
+        self.absolute_ceiling = True
+
+
 class PolicyViolationError(ClyroError):
     """
     Action violates a policy rule.
