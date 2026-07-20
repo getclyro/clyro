@@ -198,29 +198,6 @@ class AuditLogger(BaseAuditLogger):
                 )
                 act_event_id = act_event["event_id"]
 
-                trace_decision = "block" if decision == "blocked" else "allow"
-                policy_event = self._trace_factory.policy_check(
-                    tool_name=tool_name,
-                    params=redacted_params,
-                    duration_ms=duration_ms,
-                    decision=trace_decision,
-                    rule_results=rule_results,
-                    parent_event_id=act_event_id,
-                )
-                self._enqueue_trace(policy_event)
-
-                if decision == "blocked":
-                    trace_event = self._trace_factory.blocked_call(
-                        tool_name=tool_name,
-                        block_type=block_reason or "unknown",
-                        block_message=f"Blocked by {block_reason}",
-                        block_details=block_details,
-                    )
-                    self._enqueue_trace(trace_event)
-                else:
-                    if request_id is not None:
-                        self._pending_act_events[request_id] = (act_event_id, step_number)
-                    self._enqueue_trace(act_event)
                 if decision == "would_block":
                     # A10 dry-run (FRD-004/008/017): emit ONE distinct would_block
                     # marker — NO policy_check(block), NO blocked_call error
@@ -237,10 +214,10 @@ class AuditLogger(BaseAuditLogger):
                             duration_ms=duration_ms,
                             parent_event_id=act_event_id,
                         )
-                        self._sync_manager.enqueue(wb_event)
+                        self._enqueue_trace(wb_event)
                     if request_id is not None:
                         self._pending_act_events[request_id] = (act_event_id, step_number)
-                    self._sync_manager.enqueue(act_event)
+                    self._enqueue_trace(act_event)
                 else:
                     trace_decision = "block" if decision == "blocked" else "allow"
                     policy_event = self._trace_factory.policy_check(
@@ -251,7 +228,7 @@ class AuditLogger(BaseAuditLogger):
                         rule_results=rule_results,
                         parent_event_id=act_event_id,
                     )
-                    self._sync_manager.enqueue(policy_event)
+                    self._enqueue_trace(policy_event)
 
                     if decision == "blocked":
                         trace_event = self._trace_factory.blocked_call(
@@ -260,11 +237,11 @@ class AuditLogger(BaseAuditLogger):
                             block_message=f"Blocked by {block_reason}",
                             block_details=block_details,
                         )
-                        self._sync_manager.enqueue(trace_event)
+                        self._enqueue_trace(trace_event)
                     else:
                         if request_id is not None:
                             self._pending_act_events[request_id] = (act_event_id, step_number)
-                        self._sync_manager.enqueue(act_event)
+                        self._enqueue_trace(act_event)
             except Exception as e:
                 logger.debug("trace_emission_failed", error=str(e), fail_open=True)
 
