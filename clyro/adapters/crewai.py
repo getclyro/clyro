@@ -821,6 +821,12 @@ class CrewAICallbackHandler:
 
         max_cost = Decimal(str(self._config.controls.max_cost_usd))
         if self._local_cumulative_cost > max_cost:
+            # A10 dry-run: record a would-block and proceed (FRD-020/022).
+            if self._session.is_dry_run:
+                self._session._emit_would_block(
+                    "cost", f"cost_{self._local_cumulative_cost}", dedup_key="cost"
+                )
+                return
             raise CostLimitExceededError(
                 limit_usd=float(max_cost),
                 current_cost_usd=float(self._local_cumulative_cost),

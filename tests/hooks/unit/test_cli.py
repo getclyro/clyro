@@ -93,6 +93,9 @@ class TestCmdEvaluate:
         mock_config.return_value = MagicMock()
         mock_config.return_value.audit.log_path = "/dev/null"
         mock_config.return_value.audit.redact_parameters = []
+        # A10: default enforce mode — lock timeout fails closed (FRD-014 relaxes
+        # only in dry_run). Mock must not auto-return a truthy resolved flag.
+        mock_config.return_value.resolved_is_dry_run = False
         mock_lock.return_value.__enter__ = MagicMock(side_effect=TimeoutError)
 
         args = self._make_args()

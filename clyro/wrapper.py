@@ -32,6 +32,7 @@ from clyro.adapters.generic import GenericAdapter, detect_adapter
 from clyro.adapters.langgraph import LangGraphAdapter
 from clyro.adapters.openai import OpenAIAdapter
 from clyro.config import ClyroConfig, get_config, set_config
+from clyro.dry_run import log_mode_banner
 from clyro.exceptions import (
     ClyroWrapError,
     ExecutionControlError,
@@ -229,6 +230,13 @@ class WrappedAgent(Generic[T]):
         self._agent = agent
         self._config = config or get_config()
         self._adapter = adapter or detect_adapter(agent)
+        # Strong refs to in-flight event-sink tasks (a bare create_task can be
+        # garbage-collected mid-flight, silently losing the event).
+        self._sink_tasks: set[Any] = set()
+
+        # A10: announce the resolved enforcement mode once at start (FRD-012).
+        # Only dry_run is announced (loudly) — enforce is the silent default.
+        log_mode_banner("sdk", self._config.controls.is_dry_run)
 
         # Extract org_id from JWT API key if not provided explicitly
         if org_id is None and self._config.api_key:
@@ -329,8 +337,13 @@ class WrappedAgent(Generic[T]):
 
             # Implements FRD-SOF-002: local policy evaluator
             if self._config.controls.enable_policy_enforcement:
+                # A10: thread the resolved dry-run mode so the offline evaluator
+                # records-and-proceeds (and skips the approval handler) — FRD-020/013.
                 self._policy_evaluator: PolicyEvaluator | SDKLocalPolicyEvaluator | None = (
-                    SDKLocalPolicyEvaluator(approval_handler=approval_handler)
+                    SDKLocalPolicyEvaluator(
+                        approval_handler=approval_handler,
+                        dry_run=self._config.controls.is_dry_run,
+                    )
                 )
             else:
                 self._policy_evaluator = None
@@ -1025,6 +1038,9 @@ class WrappedAgent(Generic[T]):
         Args:
             session: Session to clean up (for future use; currently unused)
         """
+        # Must precede the flush: a would_block emitted by a teardown check is
+        # still a scheduled task, and flush snapshots the buffer without yielding.
+        await self._drain_sink_tasks()
         await self._flush_async()
         set_current_session(None)
 
@@ -1111,29 +1127,103 @@ class WrappedAgent(Generic[T]):
         # Fallback to string representation
         return str(value)
 
+    def _mark_dry_run(self, event: TraceEvent | None) -> None:
+        """Stamp the session-level dry_run marker on every synced event. Implements FRD-018.
+
+        The distinct ``would_block`` event type covers policy-specific readers,
+        but the read-all-events behaviour metrics (drift / ARI / cost) need to
+        exclude the *whole* dry-run session — including an all-allow session that
+        emits no would-block. Stamping here, at the transport boundary, marks
+        every event the backend receives. Idempotent (would-blocks already carry it).
+        """
+        if event is not None and self._config.controls.is_dry_run:
+            event.metadata["dry_run"] = True
+
     def _buffer_event_sink(self, event: TraceEvent) -> None:
         """Event sink callback for Session — buffers to whichever transport is active.
 
-        Used as session._event_sink so that policy_check events from
-        check_policy() / check_policy_async() reach the transport.
-        Fail-open: never raises.
+        Used as session._event_sink so that policy_check and ``would_block``
+        events from check_policy() / the execution-control checks reach the
+        transport. Fail-open: never raises.
+
+        This sink is the ONLY delivery path for these events — unlike lifecycle
+        and adapter events, which the wrapper buffers directly via
+        ``_buffer_event_sync``/`_buffer_event_async` from outside the agent's
+        event loop. That matters because the checks run *during* agent execution:
+        a sync-wrapped agent whose framework runs an internal event loop (e.g.
+        LangGraph) reaches ``SyncTransport.buffer_event`` from inside a running
+        loop, which raises by design. Previously that exception was swallowed and
+        the event vanished — silently, and only "sometimes" (whenever a loop
+        happened to be running). Now any failure falls back to local storage so
+        the background sync worker still delivers it.
         """
+        self._mark_dry_run(event)
         try:
             if isinstance(self._transport, SyncTransport):
                 self._transport.buffer_event(event)
-            elif isinstance(self._transport, Transport):
-                # Async transport from sync context — schedule buffering.
-                # This handles the edge case where check_policy (sync) is
-                # called but the wrapper uses an async transport.
+                return
+            if isinstance(self._transport, Transport):
+                # Async transport from a sync call site — schedule buffering.
                 import asyncio
 
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self._transport.buffer_event(event))
-                except RuntimeError:
-                    pass  # No running loop — drop event (fail-open)
-        except Exception:
-            pass  # Fail-open: event sink never blocks policy enforcement
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self._transport.buffer_event(event))
+                # Retain a reference: a bare create_task may be garbage-collected
+                # mid-flight, silently losing the event.
+                self._sink_tasks.add(task)
+                task.add_done_callback(self._sink_tasks.discard)
+                return
+        except Exception as exc:
+            self._store_event_fallback(event, exc)
+
+    async def _drain_sink_tasks(self) -> None:
+        """Await every in-flight sink task so its event reaches the buffer.
+
+        ``_buffer_event_sink`` can only *schedule* buffering on the async
+        transport (``create_task``) — it is called from sync code inside a
+        running loop. ``Transport._flush_buffer`` snapshots the buffer under an
+        uncontended lock, which does not yield, so a task scheduled just before
+        the flush has not run when the snapshot is taken: its event misses the
+        batch, is appended to a buffer nobody flushes again, and dies with the
+        process.
+
+        Checks emitted mid-run survive by luck — later awaits let their tasks
+        run. A check emitted during teardown (the step limit trips on the final
+        record_step, microseconds before cleanup flushes) loses the race every
+        time. Drain before flushing rather than relying on that timing.
+        """
+        if not self._sink_tasks:
+            return
+        import asyncio
+
+        # Copy: done-callbacks mutate _sink_tasks while we await.
+        pending = [t for t in list(self._sink_tasks) if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def _store_event_fallback(self, event: TraceEvent, exc: Exception) -> None:
+        """Persist an event the sink could not buffer, so it is not lost.
+
+        The background sync worker drains local storage, so the event is
+        delivered on the next sync tick (or the next process run) instead of
+        being dropped. Never raises — but never silent either: a dropped
+        governance event must be visible.
+        """
+        try:
+            self._transport.storage.store_event(event)
+            logger.warning(
+                "clyro_event_sink_fallback_to_storage",
+                event_type=str(event.event_type),
+                reason=str(exc),
+                hint="Buffered to local storage; the sync worker will deliver it.",
+            )
+        except Exception as store_exc:
+            logger.warning(
+                "clyro_event_dropped",
+                event_type=str(event.event_type),
+                reason=str(exc),
+                store_error=str(store_exc),
+            )
 
     def _local_event_sink(self, event: TraceEvent) -> None:
         """Event sink for local mode — routes to LocalTerminalLogger.
@@ -1149,6 +1239,7 @@ class WrappedAgent(Generic[T]):
 
     def _buffer_event_sync(self, event: TraceEvent) -> None:
         """Buffer event synchronously with fail-open behavior."""
+        self._mark_dry_run(event)  # FRD-018
         try:
             if isinstance(self._transport, SyncTransport):
                 self._transport.buffer_event(event)
@@ -1159,6 +1250,7 @@ class WrappedAgent(Generic[T]):
 
     async def _buffer_event_async(self, event: TraceEvent) -> None:
         """Buffer event asynchronously with fail-open behavior."""
+        self._mark_dry_run(event)  # FRD-018
         try:
             if isinstance(self._transport, Transport):
                 await self._transport.buffer_event(event)
@@ -1518,6 +1610,13 @@ def wrap(
                         ),
                         agent_type=type(agent).__name__,
                     )
+
+            # A10 FRD-012: announce the resolved mode here too. This path returns
+            # a traced client directly and never constructs WrappedAgent, so the
+            # banner in its __init__ never fired for the OpenAI/Anthropic client
+            # adapters — leaving the two surfaces where dry_run is hardest to
+            # confirm as the only ones that never say which mode they are in.
+            log_mode_banner("sdk", resolved_config.controls.is_dry_run)
 
             adapter_cls = AnthropicAdapter if resolved_adapter == "anthropic" else OpenAIAdapter
             sdk_adapter = adapter_cls(

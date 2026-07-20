@@ -36,7 +36,9 @@ from uuid import UUID, uuid4
 import structlog
 
 from clyro.cost import CostCalculator, TokenUsage
+from clyro.dry_run import build_would_block_event, log_would_block
 from clyro.exceptions import (
+    AbsoluteCeilingExceededError,
     CostLimitExceededError,
     StepLimitExceededError,
 )
@@ -120,6 +122,15 @@ class Session:
         # Policy enforcement
         self._policy_evaluator = policy_evaluator
 
+        # A10 dry-run (monitor) mode. Snapshot the resolved mode once at
+        # construction (the mode is global / set-once — TDD §2.7 A4), so every
+        # check reads a stable value and cannot race a concurrent agent.
+        self._is_dry_run: bool = bool(self.config.controls.is_dry_run)
+        # De-dup latch (FRD-022): the cost/step/loop predicates are sticky (once
+        # crossed they stay true), so record exactly one would-block per distinct
+        # reason instead of one per step. Keys: "step", "cost", "loop:<hash>".
+        self._would_block_emitted: set[str] = set()
+
         # Event sink: optional callback for transport buffering.
         # Set by the Wrapper so that events recorded via record_event()
         # (including policy_check events from check_policy) are also
@@ -149,6 +160,76 @@ class Session:
     def is_active(self) -> bool:
         """Whether the session is currently active."""
         return self._is_active
+
+    @property
+    def is_dry_run(self) -> bool:
+        """Whether this session is running in dry-run (monitor) mode. Implements FRD-001."""
+        return self._is_dry_run
+
+    def _emit_would_block(
+        self,
+        check_type: str,
+        action: str,
+        dedup_key: str,
+        would_be_outcome: str = "block",
+        rule_id: str | None = None,
+    ) -> None:
+        """Record one non-enforced would-block marker for an execution-control check.
+
+        Implements FRD-008 (distinct marker), FRD-011 (log token), FRD-022 (de-dup).
+        Latches on ``dedup_key`` so a sticky predicate emits exactly one record,
+        not one per subsequent step. Fail-open: recording must never break the agent.
+        """
+        if dedup_key in self._would_block_emitted:
+            return
+        self._would_block_emitted.add(dedup_key)
+        try:
+            event = build_would_block_event(
+                session_id=self.session_id,
+                agent_id=self.agent_id,
+                check_type=check_type,  # type: ignore[arg-type]
+                action=action,
+                would_be_outcome=would_be_outcome,  # type: ignore[arg-type]
+                rule_id=rule_id,
+                framework=self.framework,
+            )
+            event.step_number = self._step_number
+            event.cumulative_cost = self._cumulative_cost
+            self._events.append(event)
+            if self._event_sink is not None:
+                self._event_sink(event)
+            log_would_block(check_type, action, would_be_outcome, rule_id)  # type: ignore[arg-type]
+        except Exception:
+            logger.warning(
+                "clyro_would_block_record_failed",
+                session_id=str(self.session_id),
+                fail_open=True,
+            )
+
+    def _check_absolute_ceiling(self) -> None:
+        """Enforce the hard, non-disableable safety ceiling. Implements FRD-021.
+
+        Raises even in ``dry_run`` and even when the soft ``enable_*`` limits are
+        off — it bounds the "dry-run stops nothing" footgun. Set far above the
+        normal maxima, so it never fires in ordinary use.
+        """
+        controls = self.config.controls
+        if self._step_number > controls.absolute_max_steps:
+            raise AbsoluteCeilingExceededError(
+                limit=controls.absolute_max_steps,
+                current=self._step_number,
+                dimension="step",
+                session_id=str(self.session_id),
+                step_number=self._step_number,
+            )
+        if self._cumulative_cost > Decimal(str(controls.absolute_max_cost_usd)):
+            raise AbsoluteCeilingExceededError(
+                limit=controls.absolute_max_cost_usd,
+                current=float(self._cumulative_cost),
+                dimension="cost",
+                session_id=str(self.session_id),
+                step_number=self._step_number,
+            )
 
     @property
     def duration_ms(self) -> int:
@@ -398,9 +479,13 @@ class Session:
                 EventType.SESSION_END,
             )
 
-            # Policy checks are metadata about a step, not steps themselves.
-            # They inherit the current step number without incrementing.
-            is_policy_check = event.event_type == EventType.POLICY_CHECK
+            # Policy checks (and their dry-run would_block counterparts) are
+            # metadata about a step, not steps themselves. They inherit the
+            # current step number without incrementing (FRD-008).
+            is_policy_check = event.event_type in (
+                EventType.POLICY_CHECK,
+                EventType.WOULD_BLOCK,
+            )
 
             if not is_lifecycle_event:
                 if is_policy_check:
@@ -423,6 +508,9 @@ class Session:
 
         # ENFORCEMENT — these MUST raise
         if not is_lifecycle_event:
+            # FRD-021: the absolute ceiling fires first, regardless of mode or
+            # the soft enable_* flags — the one thing dry_run cannot suppress.
+            self._check_absolute_ceiling()
             self._check_step_limit()
             if cost_changed:
                 self._check_cost_limit()
@@ -725,12 +813,18 @@ class Session:
             return None
 
     def _check_step_limit(self) -> None:
-        """Check if step limit is exceeded.  # Implements PRD-009"""
+        """Check if step limit is exceeded.  # Implements PRD-009, FRD-003"""
         if not self.config.controls.enable_step_limit:
             return
 
         max_steps = self.config.controls.max_steps
         if self._step_number > max_steps:
+            # FRD-003/008/022: in dry_run, record a would-block once and proceed
+            # instead of raising. The soft limit never stops the agent here — the
+            # absolute ceiling (FRD-021) still does.
+            if self._is_dry_run:
+                self._emit_would_block("step", f"step_{self._step_number}", dedup_key="step")
+                return
             raise StepLimitExceededError(
                 limit=max_steps,
                 current_step=self._step_number,
@@ -738,12 +832,15 @@ class Session:
             )
 
     def _check_cost_limit(self) -> None:
-        """Check if cost limit is exceeded.  # Implements PRD-010"""
+        """Check if cost limit is exceeded.  # Implements PRD-010, FRD-003"""
         if not self.config.controls.enable_cost_limit:
             return
 
         max_cost = Decimal(str(self.config.controls.max_cost_usd))
         if self._cumulative_cost > max_cost:
+            if self._is_dry_run:  # FRD-003/008/022
+                self._emit_would_block("cost", f"cost_{self._cumulative_cost}", dedup_key="cost")
+                return
             raise CostLimitExceededError(
                 limit_usd=float(max_cost),
                 current_cost_usd=float(self._cumulative_cost),
@@ -752,7 +849,7 @@ class Session:
             )
 
     def _check_loop_detection(self, state: dict[str, Any], action: str | None) -> None:
-        """Check for infinite loops via state hash comparison.  # Implements PRD-010"""
+        """Check for infinite loops via state hash comparison.  # Implements PRD-010, FRD-003"""
         if not self._loop_detector or not self._loop_detection_enabled:
             return
 
@@ -763,6 +860,30 @@ class Session:
                 session_id=str(self.session_id),
                 step_number=self._step_number,
             )
+            return
+
+        # FRD-020: in dry_run use the EXISTING raise_on_loop=False path (no
+        # signature change — 4 callers, one fails closed) and consume the
+        # returned decision to record a would-block per distinct loop signature.
+        if self._is_dry_run:
+            signal = self._loop_detector.check(
+                state=state,
+                state_hash=state_hash,
+                action=action,
+                raise_on_loop=False,
+                session_id=str(self.session_id),
+            )
+            if signal is not None:
+                # Key by the distinct loop signature so two *different* loops in
+                # one session each record once (FRD-022). Action-pattern loops
+                # carry no state_hash, so fall back to the action sequence rather
+                # than collapsing every action loop onto one key.
+                sig = signal.state_hash or f"action:{signal.action_sequence}"
+                self._emit_would_block(
+                    "loop",
+                    f"loop_{sig[:24]}",
+                    dedup_key=f"loop:{sig}",
+                )
             return
 
         self._loop_detector.check(

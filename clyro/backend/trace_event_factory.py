@@ -44,10 +44,16 @@ class TraceEventFactory:
     """
 
     def __init__(
-        self, session: McpSession, cost_per_token_usd: float = _DEFAULT_COST_PER_TOKEN_USD
+        self,
+        session: McpSession,
+        cost_per_token_usd: float = _DEFAULT_COST_PER_TOKEN_USD,
+        dry_run: bool = False,
     ) -> None:
         self._session = session
         self._cost_per_token_usd = cost_per_token_usd
+        # A10: when set, every event this factory builds carries the session-level
+        # dry_run marker so the backend excludes the whole session (FRD-018).
+        self._dry_run = dry_run
 
     def create_trace_event(
         self,
@@ -94,6 +100,9 @@ class TraceEventFactory:
             merged_metadata["endpoint"] = self._session.endpoint
         if truncated:
             merged_metadata["output_truncated"] = True
+        # A10 FRD-018: stamp the session-level dry_run marker on every event.
+        if self._dry_run:
+            merged_metadata["dry_run"] = True
 
         event: dict[str, Any] = {
             # Identifiers
@@ -231,6 +240,48 @@ class TraceEventFactory:
             duration_ms=duration_ms,
             parent_event_id=parent_event_id,
             step_number=step_number,
+        )
+
+    # Map MCP block_type → the four canonical check types (FRD-008).
+    _BLOCK_TYPE_TO_CHECK: dict[str, str] = {
+        "loop_detected": "loop",
+        "step_limit_exceeded": "step",
+        "budget_exceeded": "cost",
+        "policy_violation": "policy",
+    }
+
+    def would_block(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None,
+        block_type: str,
+        block_details: dict[str, Any] | None = None,
+        duration_ms: int = 0,
+        parent_event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create the distinct non-enforced would_block marker event. Implements FRD-008/017.
+
+        Emitted in dry_run instead of a ``policy_check(block)`` + ``blocked_call``
+        error pair. Carries the FRD-008 marker fields and NO ``error_type`` (the
+        FRD-017 invariant) so no enforced aggregation counts it.
+        """
+        check_type = self._BLOCK_TYPE_TO_CHECK.get(block_type, "policy")
+        details = block_details or {}
+        return self.create_trace_event(
+            "would_block",
+            "think",
+            tool_name=tool_name,
+            input_data={"name": tool_name, "arguments": params} if params else {"name": tool_name},
+            duration_ms=duration_ms,
+            metadata={
+                "would_block": {
+                    "check_type": check_type,
+                    "would_be_outcome": "block",
+                    "rule_id": details.get("policy_id"),
+                    "rule_name": details.get("rule_name"),
+                },
+            },
+            parent_event_id=parent_event_id,
         )
 
     def blocked_call(
