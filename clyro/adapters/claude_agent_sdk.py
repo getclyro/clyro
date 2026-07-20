@@ -28,7 +28,9 @@ from uuid import UUID, uuid4
 
 import structlog
 
+from clyro.dry_run import WouldBlockLatch, build_would_block_event, log_would_block
 from clyro.exceptions import (
+    AbsoluteCeilingExceededError,
     CostLimitExceededError,
     FrameworkVersionError,
     LoopDetectedError,
@@ -371,6 +373,9 @@ class ClaudeAgentHandler:
         self._cost_estimator = CostEstimator(cost_per_token_usd=Decimal(str(cost_per_token_usd)))
         self._loop_detector: Any = None  # Lazily imported; set on first use
         self._last_user_prompt: str = ""  # Last user prompt for policy evaluation
+        # A10 FRD-022: latch policy would-blocks per (session, rule, tool) so a
+        # rule tripping on thousands of tool calls records ONE marker, not one each.
+        self._wb_latch = WouldBlockLatch()
 
         # Accumulated events (drained by WrappedAgent or end_session)
         self._events: list[TraceEvent] = []
@@ -454,13 +459,40 @@ class ClaudeAgentHandler:
                 logger.error("clyro_hook_missing_session_id", hook_type=hook_type)
                 return None
             return await self._dispatch(hook_type, input_data, tool_use_id)
+        except AbsoluteCeilingExceededError as e:
+            # A10: the absolute ceiling is a HARD stop — it halts the agent even
+            # in dry_run (FRD-021). Never converted to allow.
+            self._pending_error = e
+            return self._deny_response(hook_type, str(e), stop_agent=True)
         except (StepLimitExceededError, CostLimitExceededError, LoopDetectedError) as e:
+            # A10 dry-run safety net (FRD-020): these are gated at their raise
+            # sites in dry_run, so reaching here means an un-gated path leaked —
+            # record a would-block and allow rather than deny.
+            if self._session and self._session.is_dry_run:
+                check = (
+                    "step"
+                    if isinstance(e, StepLimitExceededError)
+                    else "cost"
+                    if isinstance(e, CostLimitExceededError)
+                    else "loop"
+                )
+                self._session._emit_would_block(check, hook_type, dedup_key=check)
+                return None
             # Execution control errors must stop the agent entirely —
             # matches Anthropic/LangGraph/CrewAI where these propagate up.
             # Store for WrappedAgent to re-raise after SDK execution returns.
             self._pending_error = e
             return self._deny_response(hook_type, str(e), stop_agent=True)
         except PolicyViolationError as e:
+            # A10 dry-run safety net (FRD-020): record a would-block and allow.
+            if self._session and self._session.is_dry_run:
+                self._session._emit_would_block(
+                    "policy",
+                    hook_type,
+                    dedup_key=f"policy:{getattr(e, 'rule_id', '')}",
+                    rule_id=getattr(e, "rule_id", None),
+                )
+                return None
             # Policy block must stop the agent entirely —
             # matches Anthropic/LangGraph/CrewAI where PolicyViolationError
             # stops execution, not just denies a single tool call.
@@ -593,18 +625,25 @@ class ClaudeAgentHandler:
         # 1a: Resolve tool_use_id (correlator generates synthetic ID if missing)
         tool_use_id = tool_use_id or input_data.get("tool_use_id") or ""
 
+        # A10: in dry_run, an exceeded limit records a would-block and proceeds
+        # instead of raising — and emits NO error event (FRD-017). Implements FRD-020/022.
+        dry_run = bool(self._session and self._session.is_dry_run)
+
         # 3: Step limit (FRD-011a)
         self._step_count += 1
         if (
             self._config.controls.enable_step_limit
             and self._step_count > self._config.controls.max_steps
         ):
-            msg = f"Clyro step limit exceeded ({self._config.controls.max_steps} steps)"
-            self._record_error_event("StepLimitExceeded", msg)
-            raise StepLimitExceededError(
-                limit=self._config.controls.max_steps,
-                current_step=self._step_count,
-            )
+            if dry_run:
+                self._session._emit_would_block("step", tool_name, dedup_key="step")
+            else:
+                msg = f"Clyro step limit exceeded ({self._config.controls.max_steps} steps)"
+                self._record_error_event("StepLimitExceeded", msg)
+                raise StepLimitExceededError(
+                    limit=self._config.controls.max_steps,
+                    current_step=self._step_count,
+                )
 
         # 4: Cost estimation (character-length heuristic) + limit enforcement (FRD-011b)
         tool_input_str = json.dumps(tool_input, default=str) if tool_input else None
@@ -612,12 +651,17 @@ class ClaudeAgentHandler:
         if self._config.controls.enable_cost_limit:
             max_cost = Decimal(str(self._config.controls.max_cost_usd))
             if estimated_cost > max_cost:
-                msg = f"Clyro cost limit exceeded (${max_cost})"
-                self._record_error_event("CostLimitExceeded", msg)
-                raise CostLimitExceededError(
-                    limit_usd=float(max_cost),
-                    current_cost_usd=float(estimated_cost),
-                )
+                if dry_run:
+                    self._session._emit_would_block(
+                        "cost", f"cost_{estimated_cost}", dedup_key="cost"
+                    )
+                else:
+                    msg = f"Clyro cost limit exceeded (${max_cost})"
+                    self._record_error_event("CostLimitExceeded", msg)
+                    raise CostLimitExceededError(
+                        limit_usd=float(max_cost),
+                        current_cost_usd=float(estimated_cost),
+                    )
 
         # 5: Loop detection (FRD-011c)
         if self._config.controls.enable_loop_detection:
@@ -631,12 +675,19 @@ class ClaudeAgentHandler:
                         self._loop_detector = LoopDetector(
                             threshold=self._config.controls.loop_detection_threshold,
                         )
-                    self._loop_detector.check(
+                    # A10 dry-run: use raise_on_loop=False and record the returned
+                    # signal as a would-block instead of raising (FRD-020).
+                    signal = self._loop_detector.check(
                         state=state_for_hash,
                         state_hash=state_hash,
                         action=tool_name,
-                        raise_on_loop=True,
+                        raise_on_loop=not dry_run,
                     )
+                    if dry_run and signal is not None:
+                        # Distinct loop signature per FRD-022 (action loops carry
+                        # no state_hash — key on the action sequence instead).
+                        sig = signal.state_hash or f"action:{signal.action_sequence}"
+                        self._session._emit_would_block("loop", tool_name, dedup_key=f"loop:{sig}")
             except LoopDetectedError:
                 self._record_error_event(
                     "LoopDetected", "Clyro loop detected: same tool call repeated"
@@ -1135,6 +1186,34 @@ class ClaudeAgentHandler:
                 evaluated_rules=decision.evaluated_rules,
             )
             return None
+
+        # A10 dry-run: a would-be block / require_approval records a distinct
+        # would_block marker (no policy_check(block), no error event — FRD-017)
+        # and PROCEEDS. The approval handler is never invoked (FRD-013).
+        # Latched per (session, rule, tool) so a rule that trips on thousands of
+        # tool calls records ONE marker, not one each (FRD-022).
+        if self._session and self._session.is_dry_run:
+            wb_key = WouldBlockLatch.policy_key(
+                self._session.session_id, decision.rule_id, tool_name, decision.decision
+            )
+            if not self._wb_latch.record(wb_key):
+                return None  # repeat of an already-recorded reason — allow
+            wb = build_would_block_event(
+                session_id=self._session.session_id,
+                agent_id=self._session.agent_id,
+                parent_event_id=parent_event_id,
+                check_type="policy",
+                action=tool_name,
+                would_be_outcome=decision.decision,  # type: ignore[arg-type]
+                rule_id=decision.rule_id,
+                rule_name=decision.rule_name,
+                input_data={"tool_name": tool_name, "action_type": "tool_call"},
+                framework=Framework.CLAUDE_AGENT_SDK,
+                extra_metadata={"message": decision.message},
+            )
+            self._record_event(wb)
+            log_would_block("policy", tool_name, decision.decision, decision.rule_id)
+            return None  # allow — dry_run acts on nothing
 
         # If require_approval decision reached here without raising, the
         # PolicyEvaluator's approval handler already approved the action.
@@ -1708,6 +1787,20 @@ class ClaudeAgentAdapter:
                 handler._policy_evaluator = session._policy_evaluator
         return {"start_time": time.perf_counter(), "handler": handler}
 
+    def _resolve_model(self) -> str | None:
+        """Return the model configured on the wrapped agent's ClaudeAgentOptions.
+
+        The wrapped object (a ClaudeSDKClient, a bound method, or the options object
+        itself) does not expose ``.model`` directly — the model lives on
+        ``.options.model``. Resolve it the same way ``before_call`` resolves the
+        options object, including unwrapping bound methods via ``__self__``.
+        """
+        agent_obj = self._agent
+        if hasattr(agent_obj, "__self__"):
+            agent_obj = agent_obj.__self__
+        options = getattr(agent_obj, "options", None) or agent_obj
+        return getattr(options, "model", None)
+
     def after_call(self, session: Session, result: Any, context: dict[str, Any]) -> TraceEvent:
         """Synthesize an llm_call event for the Claude Agent SDK execution.
 
@@ -1741,11 +1834,17 @@ class ClaudeAgentAdapter:
             except Exception:
                 output_data = {"result": "<serialization_error>"}
 
+        model = self._resolve_model()
         return create_llm_call_event(
             session_id=session.session_id,
             step_number=0,  # Auto-increment to next unique step number
-            model="claude",
-            input_data={"model": "claude", "framework": "claude_agent_sdk"},
+            # The model lives on ClaudeAgentOptions (agent.options.model), not on the
+            # wrapped agent/bound method — resolve it the same way before_call resolves
+            # options. Pass it as model (-> event_name) AND copy it into
+            # input_data["model"], the field the backend derives the model column from.
+            # None -> backend buckets as 'unknown' (never dropped).
+            model=model,
+            input_data={"framework": "claude_agent_sdk", "model": model},
             output_data=output_data,
             agent_id=session.agent_id,
             duration_ms=duration_ms,

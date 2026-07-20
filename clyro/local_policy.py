@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from clyro.config import PolicyRule
 from clyro.constants import DOCS_POLICIES_URL
+from clyro.dry_run import WouldBlockLatch, build_would_block_event, log_would_block
 from clyro.exceptions import ClyroConfigError, PolicyViolationError
 from clyro.policy import (
     ApprovalHandler,
@@ -373,7 +374,15 @@ class SDKLocalPolicyEvaluator:
     def __init__(
         self,
         approval_handler: ApprovalHandler | None | object = _NO_HANDLER,
+        dry_run: bool = False,
     ) -> None:
+        # A10 dry-run (monitor) mode. In dry_run this evaluator records a
+        # would-block and proceeds instead of raising, and never invokes the
+        # approval handler (FRD-003/013). Resolved by the wrapper from the mode.
+        self._is_dry_run = dry_run
+        # A10 FRD-022: latch policy would-blocks per (session, rule, action) so a
+        # rule tripping on thousands of actions records ONE marker, not one each.
+        self._wb_latch = WouldBlockLatch()
         # Auto-detect approval handler (same logic as cloud PolicyEvaluator)
         if approval_handler is self._NO_HANDLER:
             try:
@@ -471,6 +480,12 @@ class SDKLocalPolicyEvaluator:
                     final_decision = "block"
                     violation_details = self._build_violation_details(rule, actual, action_type)
                     break
+                if decision == "require_approval":
+                    # Only reachable in dry_run (FRD-013) — record the would-be
+                    # outcome and proceed; evaluate_sync will not raise.
+                    final_decision = "require_approval"
+                    violation_details = self._build_violation_details(rule, actual, action_type)
+                    break
                 if decision == "allow":
                     final_decision = "allow"
                     break
@@ -547,6 +562,16 @@ class SDKLocalPolicyEvaluator:
         """
         result = self._evaluate(action_type, parameters, session_id, step_number)
 
+        # A10 dry-run (FRD-003): record-and-proceed — the would_block marker was
+        # already emitted by _emit_policy_event; do not raise. Applies to both a
+        # would-be block and a would-be require_approval.
+        if self._is_dry_run:
+            return PolicyDecision(
+                decision="allow",
+                evaluated_rules=len(result.rule_results),
+                rule_results=result.rule_results,
+            )
+
         if result.violated and result.violation_details:
             raise PolicyViolationError(
                 rule_id=result.violation_details.get("policy_id", "local"),
@@ -613,6 +638,11 @@ class SDKLocalPolicyEvaluator:
             return "allow"
 
         # require_approval
+        # A10 dry-run (FRD-013): never invoke the approval handler — its blocking
+        # input() would hang a background process. Surface the raw outcome so
+        # _evaluate records a would_block(require_approval) and proceeds.
+        if self._is_dry_run:
+            return "require_approval"
         if self._approval_handler is None:
             return "block"  # No handler (non-TTY) → treat as block
 
@@ -675,7 +705,44 @@ class SDKLocalPolicyEvaluator:
         session_id: UUID | None,
         step_number: int | None,
     ) -> None:
-        """Create and buffer a POLICY_CHECK trace event for the audit trail."""
+        """Create and buffer the audit trace event.
+
+        In enforce mode (or for an allow) this is a POLICY_CHECK. In dry_run, a
+        would-be block / require_approval is recorded as a distinct WOULD_BLOCK
+        marker (FRD-008/017) so no enforced aggregation counts it.
+        """
+        # A10 dry-run: a would-be block / require_approval becomes a would_block
+        # marker; allow stays a normal policy_check. Implements FRD-008/017.
+        # Latched per (session, rule, action_type) — a rule that trips on
+        # thousands of actions records ONE marker, repeats are counted only
+        # (FRD-022 extended to the non-sticky policy check).
+        if self._is_dry_run and result.decision in ("block", "require_approval"):
+            details = result.violation_details or {}
+            key = WouldBlockLatch.policy_key(
+                session_id, details.get("policy_id"), action_type, result.decision
+            )
+            if not self._wb_latch.record(key):
+                return  # repeat of an already-recorded reason — counted only
+            wb_event = build_would_block_event(
+                session_id=session_id or uuid4(),
+                check_type="policy",
+                action=action_type,
+                would_be_outcome=result.decision,  # type: ignore[arg-type]
+                rule_id=details.get("policy_id"),
+                rule_name=details.get("rule_name"),
+                input_data={"action_type": action_type, "parameters": parameters},
+                extra_metadata={
+                    "action_type": action_type,
+                    "evaluated_rules": len(result.rule_results),
+                    "rule_results": result.rule_results,
+                },
+            )
+            if step_number is not None:
+                wb_event.step_number = step_number
+            self._events.append(wb_event)
+            log_would_block("policy", action_type, result.decision, details.get("policy_id"))
+            return
+
         metadata: dict[str, Any] = {
             "decision": result.decision,
             "action_type": action_type,
