@@ -77,6 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-plaintext",
         action="store_true",
         help="Permit plaintext/loopback HTTP targets (the single safety-floor relaxation, FRD-039)",
+    )
 
     # A10 dry-run (monitor) mode. Implements FRD-002 (CLI override).
     wrap_parser.add_argument(
@@ -534,7 +535,7 @@ def main() -> None:
             transport=args.transport,
             url=args.url,
             allow_plaintext=args.allow_plaintext,
+            dry_run_cli=args.dry_run,
         )
     )
-    exit_code = asyncio.run(_async_main(server_command, args.config, dry_run_cli=args.dry_run))
     sys.exit(exit_code)
