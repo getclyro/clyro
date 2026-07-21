@@ -356,7 +356,12 @@ class MessageRouter:
                     params_json_len=len(params_json),
                     forwarded_at=time.monotonic(),
                 )
-                await self._transport.write_to_child(raw)
+                # Use the ServerTransport protocol method, not the stdio-only
+                # `write_to_child`: A11's HttpTransport implements `send` and has
+                # no `write_to_child`, so the stdio-era call raised AttributeError
+                # and dry-run could not forward over HTTP. On stdio `send` is a
+                # thin alias for `write_to_child`, so behaviour is unchanged there.
+                await self._transport.send(raw)
 
                 # A10 FRD-022: the prevention stack re-evaluates EVERY tools/call,
                 # so without a latch a tripped limit (sticky) or a policy rule
