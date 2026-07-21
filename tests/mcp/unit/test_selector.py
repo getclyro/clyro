@@ -9,6 +9,7 @@ FRD-021, FRD-022, FRD-042.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from clyro.config import ServerConfig, WrapperConfig
 from clyro.mcp.selector import SelectionError, select_transport
@@ -64,5 +65,5 @@ class TestConfigDefaults:
         assert s.reconnect.max_attempts == 5  # FRD-056
 
     def test_invalid_transport_value_rejected_by_model(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             WrapperConfig(default_action="allow", transport="ftp")

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-21
+
+### Added
+
+**Native HTTP (Streamable HTTP) downstream transport for the MCP wrapper.**
+`clyro-mcp wrap --transport http --url <URL>` governs a remote MCP server reached
+over HTTP instead of spawning a local stdio child — the wrapper still speaks stdio
+upstream to the host, so governance (step/cost limits, loop detection, policies,
+audit) is unchanged; only the downstream leg differs. Includes the SSRF safety
+floor with resolved-IP pinning, per-hop redirect re-validation, TLS policy,
+static-credential attachment, `Mcp-Session-Id` handling, and bounded reconnection.
+Loopback/plaintext targets require the explicit `--allow-plaintext` relaxation.
+
+### Fixed
+
+**Dry-run now forwards would-be-blocked calls over HTTP.** The router's dry-run
+branch used the stdio-only `write_to_child`; `HttpTransport` implements the
+`ServerTransport` protocol (`send`) and has no such method, so dry-run raised
+`AttributeError` over HTTP and never forwarded the call — silently behaving like a
+hard block, the opposite of its contract. Behaviour on stdio is unchanged.
+
 ## [0.3.3] - 2026-07-20
 
 ### Added

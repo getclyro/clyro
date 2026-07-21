@@ -12,7 +12,6 @@ Uses httpx.MockTransport for the server; no network, no real rig (OQ-1).
 from __future__ import annotations
 
 import json
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -105,4 +104,53 @@ async def test_settlement_on_connection_loss(tmp_path) -> None:
     router._settle_pending()
     assert session.accumulated_cost_usd > before  # FRD-026: never zero (D9)
     assert 1 not in router._pending_requests  # settled, not left dangling
+    await t.close()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_forwards_over_http(tmp_path) -> None:
+    """A10 + A11: in dry_run a would-be block must still reach the HTTP server.
+
+    Regression. The router's dry-run branch forwarded with the stdio-only
+    ``write_to_child``; ``HttpTransport`` implements the ``ServerTransport``
+    protocol (``send``) and has no such method, so dry-run raised
+    ``AttributeError`` and the call was never forwarded — dry-run silently
+    behaved like a hard block on HTTP, the exact opposite of its contract.
+
+    Nothing covered dry-run over HTTP: the dry-run suite uses a bare MagicMock
+    transport, which accepts any method name and so cannot catch this.
+    """
+    posted: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+
+    t = _http_transport(handler)
+    await t.open()
+
+    # default_action="block" => no rule matches => the prevention stack blocks.
+    config = WrapperConfig(default_action="block")
+    session = McpSession()
+    audit = AuditLogger(AuditConfig(log_path=str(tmp_path / "audit.jsonl")), session.session_id)
+    audit.set_transport("http")
+    router = MessageRouter(
+        config, session, t, PreventionStack(config), audit, dry_run=True
+    )
+
+    raw = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "delete_everything", "arguments": {}},
+        }
+    ).encode()
+    await router._handle_host_message(raw)
+
+    assert posted, (
+        "dry-run did not forward the would-be-blocked call over HTTP — "
+        "the router used a stdio-only transport method"
+    )
+    assert b"delete_everything" in posted[0]
     await t.close()
