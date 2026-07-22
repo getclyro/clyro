@@ -214,12 +214,22 @@ class PolicyClient:
             },
         }
 
-        if session_id is not None or step_number is not None:
+        # A10 (FRD-010/017): signal dry-run so the backend returns the decision but
+        # does NOT persist a policy_violations row for it. The SDK's local YAML
+        # intentionally defers ``default_action`` to the backend, so the
+        # no-rule-matched block is the one case that reaches ``/evaluate`` and would
+        # otherwise be persisted even though the SDK converts it to a would_block.
+        controls = getattr(self._config, "controls", None)
+        is_dry_run = bool(getattr(controls, "is_dry_run", False))
+
+        if session_id is not None or step_number is not None or is_dry_run:
             payload["context"] = {}
             if session_id is not None:
                 payload["context"]["session_id"] = str(session_id)
             if step_number is not None:
                 payload["context"]["step_number"] = step_number
+            if is_dry_run:
+                payload["context"]["dry_run"] = True
 
         return payload
 
@@ -555,7 +565,7 @@ class PolicyEvaluator:
                 step_number=step_number,
             )
         except Exception as e:
-            return self._handle_error(e, action_type, session_id, step_number)
+            return self._handle_error(e, action_type, session_id, step_number, parameters)
 
         sdk_latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -606,7 +616,7 @@ class PolicyEvaluator:
                 step_number=step_number,
             )
         except Exception as e:
-            return self._handle_error(e, action_type, session_id, step_number)
+            return self._handle_error(e, action_type, session_id, step_number, parameters)
 
         sdk_latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -621,6 +631,7 @@ class PolicyEvaluator:
         action_type: str,
         session_id: UUID | None,
         step_number: int | None,
+        parameters: dict[str, Any] | None = None,
     ) -> PolicyDecision:
         """
         Handle policy evaluation errors with appropriate severity.
@@ -672,6 +683,27 @@ class PolicyEvaluator:
         )
 
         if self._config.fail_open:
+            return PolicyDecision.allow()
+
+        # A10 dry-run: fail-closed (fail_open=False) would hard-block the agent, but
+        # dry-run's contract is "record then allow" — the action must PROCEED. A
+        # fail-closed policy-backend error is itself a would-block, so record it and
+        # allow, instead of raising (which would stop the agent and emit no would_block
+        # at all). is_dry_run is orthogonal to fail_open, but the "action proceeds in
+        # dry_run" invariant wins here. Use the shared buffer helper so the marker is
+        # LATCHED per reason — a *persistent* backend outage records ONE would_block,
+        # not one per call — and buffered as a backend event for the report, matching
+        # the cloud/local would-block paths.
+        if self._config.controls.is_dry_run:
+            self._buffer_policy_would_block(
+                action_type=action_type,
+                would_be_outcome="block",
+                rule_id="system_error",
+                rule_name="Policy Evaluation Error",
+                parameters=parameters or {},
+                session_id=session_id,
+                step_number=step_number,
+            )
             return PolicyDecision.allow()
 
         raise PolicyViolationError(

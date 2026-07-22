@@ -167,7 +167,8 @@ def evaluate(
     # Get merged policies (local + cloud with cache)
     merged_policies = get_merged_policies(config, state)
 
-    # ── Stage 1: Loop Detection (FRD-HK-003) ──
+    # Build the loop detector up front (shared infra): Stage 0's _save_and_block
+    # persists its call history, and Stage 1 below runs the actual loop check.
     loop_detector = LoopDetector(
         threshold=config.global_.loop_detection.threshold,
         window=config.global_.loop_detection.window,
@@ -178,6 +179,75 @@ def evaluate(
         maxlen=config.global_.loop_detection.window,
     )
 
+    # ── Stage 0: Absolute ceiling (FRD-021) — non-suppressable hard stop ──
+    # A hard limit that fires even in dry_run and even if the soft max_steps /
+    # max_cost_usd are set high. It MUST be checked BEFORE the soft stages: in
+    # dry_run each soft stage (loop/step/cost/policy) records-and-allows and
+    # returns from evaluate(), so a soft stage placed first would keep this from
+    # ever being reached on a runaway. It passes ``dry_run=False`` so it genuinely
+    # blocks (the tool does NOT run) — the one thing dry_run cannot suppress,
+    # matching the SDK's absolute ceiling and the MCP wrapper's.
+    absolute_next_step = state.step_count + 1
+    if absolute_next_step > config.global_.absolute_max_steps:
+        reason = (
+            f"Absolute step ceiling exceeded: {absolute_next_step} > "
+            f"{config.global_.absolute_max_steps} (hard stop, blocks even in dry_run)"
+        )
+        result = _save_and_block(
+            state,
+            loop_detector,
+            audit,
+            session_id,
+            tool_name,
+            tool_input,
+            reason,
+            config=config,
+            dry_run=False,
+        )
+        _emit_block_trace_events(
+            config,
+            session_id,
+            state,
+            tool_name,
+            tool_input,
+            audit,
+            block_type="absolute_step_ceiling",
+            reason=reason,
+            is_first_step=is_new_turn,
+            dry_run=False,
+        )
+        return result
+    if state.accumulated_cost_usd > config.global_.absolute_max_cost_usd:
+        reason = (
+            f"Absolute cost ceiling exceeded: ${state.accumulated_cost_usd:.4f} > "
+            f"${config.global_.absolute_max_cost_usd:.2f} (hard stop, blocks even in dry_run)"
+        )
+        result = _save_and_block(
+            state,
+            loop_detector,
+            audit,
+            session_id,
+            tool_name,
+            tool_input,
+            reason,
+            config=config,
+            dry_run=False,
+        )
+        _emit_block_trace_events(
+            config,
+            session_id,
+            state,
+            tool_name,
+            tool_input,
+            audit,
+            block_type="absolute_cost_ceiling",
+            reason=reason,
+            is_first_step=is_new_turn,
+            dry_run=False,
+        )
+        return result
+
+    # ── Stage 1: Loop Detection (FRD-HK-003) ──
     try:
         loop_triggered, loop_details = loop_detector.check(tool_name, tool_input)
     except Exception as e:

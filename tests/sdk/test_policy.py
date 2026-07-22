@@ -211,6 +211,36 @@ class TestPolicyClient:
         assert payload["context"]["session_id"] == str(session_id)
         assert payload["context"]["step_number"] == 3
 
+    def test_build_payload_dry_run_signals_backend(self, temp_dir, agent_id):
+        """A10 FRD-010/017: in dry_run the payload carries context.dry_run=True so the
+        backend skips persisting a policy_violations row for a default_action block."""
+        dry_config = ClyroConfig(
+            api_key="cly_test_key",
+            endpoint="https://api.example.com",
+            local_storage_path=str(temp_dir / "traces.db"),
+            controls=ExecutionControls(
+                enable_policy_enforcement=True, enforcement_mode="dry_run"
+            ),
+        )
+        client = PolicyClient(dry_config)
+        payload = client._build_payload(
+            agent_id=agent_id,
+            action_type="tool_call",
+            parameters={"tool_name": "get_queues"},
+        )
+        assert payload["context"]["dry_run"] is True
+
+    def test_build_payload_enforce_omits_dry_run(self, policy_config, agent_id, session_id):
+        """Enforce mode does not send dry_run (backend default is to persist)."""
+        client = PolicyClient(policy_config)
+        payload = client._build_payload(
+            agent_id=agent_id,
+            action_type="tool_call",
+            parameters={"tool_name": "get_queues"},
+            session_id=session_id,
+        )
+        assert "dry_run" not in payload["context"]
+
     def test_headers_include_api_key(self, policy_config):
         """Test that headers include the API key."""
         client = PolicyClient(policy_config)

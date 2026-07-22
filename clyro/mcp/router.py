@@ -344,11 +344,16 @@ class MessageRouter:
             # Extract rule_results from details (stored by PreventionStack)
             block_rule_results = decision.details.pop("_rule_results", None)
 
-            if self._dry_run:
+            if self._dry_run and not decision.absolute:
                 # A10 (FRD-004): forward to the server instead of returning a
                 # JSON-RPC block error; audit a would-block (which emits the
                 # distinct would_block event and NO enforced error sibling —
                 # FRD-017). Implements FRD-004/017.
+                #
+                # FRD-021 exception: an absolute-ceiling block (decision.absolute)
+                # is NOT forwarded even in dry_run — it falls through to the hard
+                # block path below, returning a real JSON-RPC error to the host so
+                # a genuine runaway is stopped on this surface too.
                 params_json = json.dumps(arguments or {}, default=str)
                 self._pending_requests[request_id] = PendingCall(
                     request_id=request_id,
@@ -356,12 +361,6 @@ class MessageRouter:
                     params_json_len=len(params_json),
                     forwarded_at=time.monotonic(),
                 )
-                # Use the ServerTransport protocol method, not the stdio-only
-                # `write_to_child`: A11's HttpTransport implements `send` and has
-                # no `write_to_child`, so the stdio-era call raised AttributeError
-                # and dry-run could not forward over HTTP. On stdio `send` is a
-                # thin alias for `write_to_child`, so behaviour is unchanged there.
-                await self._transport.send(raw)
 
                 # A10 FRD-022: the prevention stack re-evaluates EVERY tools/call,
                 # so without a latch a tripped limit (sticky) or a policy rule
@@ -389,6 +388,18 @@ class MessageRouter:
                     # emit no further backend marker or terminal line.
                     emit_marker=first,
                 )
+
+                # Forward AFTER recording the would-block + audit, mirroring the
+                # allow branch's audit-before-send ordering (FRD-020): a send that
+                # fails mid-exchange then still leaves a coherent trail — the
+                # would_block marker plus the "[unresolved]" settle response — not
+                # an orphan response for a call whose would-block was never recorded.
+                # Use the ServerTransport protocol method, not the stdio-only
+                # `write_to_child`: A11's HttpTransport implements `send` and has no
+                # `write_to_child`, so the stdio-era call raised AttributeError and
+                # dry-run could not forward over HTTP. On stdio `send` is a thin
+                # alias for `write_to_child`, so behaviour is unchanged there.
+                await self._transport.send(raw)
                 if first:
                     log_would_block(check_type, tool_name, "block", rule_id)
                 return

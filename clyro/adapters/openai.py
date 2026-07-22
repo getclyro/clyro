@@ -712,6 +712,11 @@ class TracedCompletions:
         """
         controls = self._config.controls
         session._step_number += 1
+        # FRD-021: non-disableable absolute ceiling — fires even in dry_run and even
+        # with soft limits off. This adapter bypasses session.record_event(), so the
+        # ceiling must be checked here; it propagates via the caller's
+        # ExecutionControlError handler.
+        session._check_absolute_ceiling()
         if controls.enable_step_limit and session.step_number > controls.max_steps:
             # A10 dry-run: record a would-block and proceed (FRD-020/022).
             if session.is_dry_run:
@@ -757,6 +762,11 @@ class TracedCompletions:
         crosses the limit records exactly ONE marker across both sites.
         """
         controls = self._config.controls
+        # FRD-021 note: the absolute ceiling is enforced pre-call in
+        # _check_prevention_stack (whose caller emits an error event + flushes before
+        # re-raising). We deliberately do NOT re-check it here — raising from this
+        # post-call site would skip that emit+flush and lose buffered events, and the
+        # pre-call check already stops a cost runaway on the next call.
         if not controls.enable_cost_limit or float(session.cumulative_cost) < controls.max_cost_usd:
             return
         if session.is_dry_run:

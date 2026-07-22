@@ -401,6 +401,10 @@ class Session:
         # If any limit is exceeded, these methods raise exceptions
         # and prevent the event from being created
         # ENFORCEMENT — these MUST raise
+        # FRD-021: the absolute ceiling fires first, regardless of mode or the
+        # soft enable_* flags — the one thing dry_run cannot suppress. Mirrors
+        # record_event(); record_step bypasses record_event, so it must guard here.
+        self._check_absolute_ceiling()
         self._check_step_limit()
         self._check_cost_limit()
 
@@ -565,6 +569,8 @@ class Session:
             cost_usd: Cost to add in USD
         """
         self._cumulative_cost += cost_usd
+        # FRD-021: non-disableable ceiling fires even in dry_run / soft-limit-off.
+        self._check_absolute_ceiling()
         self._check_cost_limit()
 
     def estimate_call_cost(
@@ -731,6 +737,9 @@ class Session:
         self._cumulative_cost += cost_usd
 
         # ENFORCEMENT — these MUST raise
+        # FRD-021: absolute ceiling first — record_llm_call bypasses record_event,
+        # so it must guard the non-disableable ceiling here (dry_run cannot suppress it).
+        self._check_absolute_ceiling()
         self._check_step_limit()
         if cost_tracking_available:
             self._check_cost_limit()
@@ -945,6 +954,12 @@ class Session:
                         event.cumulative_cost = cumulative_cost
                     if self._event_sink is not None:
                         self._event_sink(event)
+            except AbsoluteCeilingExceededError:
+                # FRD-021: record_event raises the absolute ceiling while draining
+                # policy events once cumulative steps/cost cross it. It is a HARD stop
+                # even in dry_run and must NOT be swallowed as a fail-open drain
+                # failure — let it propagate so the agent stops promptly at the ceiling.
+                raise
             except Exception:
                 logger.warning(
                     "clyro_policy_event_drain_failed",
@@ -996,6 +1011,12 @@ class Session:
                         event.cumulative_cost = cumulative_cost
                     if self._event_sink is not None:
                         self._event_sink(event)
+            except AbsoluteCeilingExceededError:
+                # FRD-021: record_event raises the absolute ceiling while draining
+                # policy events once cumulative steps/cost cross it. It is a HARD stop
+                # even in dry_run and must NOT be swallowed as a fail-open drain
+                # failure — let it propagate so the agent stops promptly at the ceiling.
+                raise
             except Exception:
                 logger.warning(
                     "clyro_policy_event_drain_failed",

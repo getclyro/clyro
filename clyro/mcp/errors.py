@@ -61,6 +61,22 @@ def _build_reason(block_type: str, details: dict[str, Any]) -> str:
             reason += f" tool={tool_name}"
         return reason
 
+    if block_type == "absolute_step_ceiling":
+        step_count = details.get("step_count", "?")
+        ceiling = details.get("absolute_max_steps", "?")
+        return (
+            f"Absolute step ceiling reached — hard stop (step={step_count}, "
+            f"ceiling={ceiling}). This limit blocks even in dry_run mode (FRD-021)."
+        )
+
+    if block_type == "absolute_cost_ceiling":
+        accumulated = details.get("accumulated_cost_usd", "?")
+        ceiling = details.get("absolute_max_cost_usd", "?")
+        return (
+            f"Absolute cost ceiling reached — hard stop (accumulated=${accumulated}, "
+            f"ceiling=${ceiling}). This limit blocks even in dry_run mode (FRD-021)."
+        )
+
     return block_type
 
 
