@@ -13,6 +13,7 @@ invariant, and the FRD-018 session marker.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -111,9 +112,7 @@ class TestSessionExecutionControls:
     def test_dry_run_step_records_would_block_not_raise(self):
         # C1 + C7: no raise; exactly one would_block marker on the stream.
         s = Session(
-            config=ClyroConfig(
-                controls=ExecutionControls(max_steps=2, enforcement_mode="dry_run")
-            )
+            config=ClyroConfig(controls=ExecutionControls(max_steps=2, enforcement_mode="dry_run"))
         )
         for _ in range(5):
             s.record_event(_step(s))  # must not raise
@@ -142,9 +141,7 @@ class TestSessionExecutionControls:
         # records again (keys must not collapse distinct loops onto one).
         s = Session(
             config=ClyroConfig(
-                controls=ExecutionControls(
-                    loop_detection_threshold=3, enforcement_mode="dry_run"
-                )
+                controls=ExecutionControls(loop_detection_threshold=3, enforcement_mode="dry_run")
             )
         )
         for _ in range(6):  # state A repeated → 1 loop would_block
@@ -157,9 +154,7 @@ class TestSessionExecutionControls:
     def test_marker_shape_no_error_type(self):
         # FRD-008/017/018: check_type, would_be_outcome, dry_run marker, NO error_type.
         s = Session(
-            config=ClyroConfig(
-                controls=ExecutionControls(max_steps=1, enforcement_mode="dry_run")
-            )
+            config=ClyroConfig(controls=ExecutionControls(max_steps=1, enforcement_mode="dry_run"))
         )
         for _ in range(3):
             s.record_event(_step(s))
@@ -189,14 +184,93 @@ class TestAbsoluteCeiling:
 
     def test_ceiling_not_reached_in_normal_use(self):
         s = Session(
-            config=ClyroConfig(
-                controls=ExecutionControls(max_steps=3, enforcement_mode="dry_run")
-            )
+            config=ClyroConfig(controls=ExecutionControls(max_steps=3, enforcement_mode="dry_run"))
         )
         # 20 steps is well under the default 100k ceiling → no ceiling raise.
         for _ in range(20):
             s.record_event(_step(s))
         assert _would_blocks(s)  # step would-blocks recorded, no ceiling
+
+    def test_ceiling_fires_via_record_step_in_dry_run(self):
+        # FRD-021 regression: record_step bypasses record_event, so it must guard
+        # the ceiling itself — otherwise a dry_run loop through the wrapper step
+        # path (wrapper.record_step) would never hard-stop.
+        s = Session(
+            config=ClyroConfig(
+                controls=ExecutionControls(
+                    enable_step_limit=False,
+                    enforcement_mode="dry_run",
+                    absolute_max_steps=10,
+                )
+            )
+        )
+        with pytest.raises(AbsoluteCeilingExceededError) as exc:
+            for _ in range(50):
+                s.record_step("s")
+        assert exc.value.dimension == "step"
+
+    def test_ceiling_fires_via_record_llm_call_in_dry_run(self):
+        # FRD-021 regression: record_llm_call (LLM step/cost path) bypasses
+        # record_event and must guard the ceiling itself.
+        s = Session(
+            config=ClyroConfig(
+                controls=ExecutionControls(
+                    enable_step_limit=False,
+                    enforcement_mode="dry_run",
+                    absolute_max_steps=10,
+                )
+            )
+        )
+        with pytest.raises(AbsoluteCeilingExceededError) as exc:
+            for _ in range(50):
+                s.record_llm_call("gpt-4-turbo", {"prompt": "x"})
+        assert exc.value.dimension == "step"
+
+    def test_ceiling_fires_via_add_cost_in_dry_run(self):
+        # FRD-021 regression: Session.add_cost (public cost-tracking API) bypasses
+        # record_event and must guard the cost ceiling itself. NOTE: this is the SDK
+        # Session; the MCP wrapper uses a separate McpSession with no ceiling concept.
+        s = Session(
+            config=ClyroConfig(
+                controls=ExecutionControls(
+                    enable_cost_limit=False,
+                    enforcement_mode="dry_run",
+                    absolute_max_cost_usd=1.0,
+                )
+            )
+        )
+        with pytest.raises(AbsoluteCeilingExceededError) as exc:
+            for _ in range(50):
+                s.add_cost(Decimal("0.10"))
+        assert exc.value.dimension == "cost"
+
+    def test_ceiling_propagates_through_policy_event_drain(self):
+        # FRD-021 regression: record_event raises the ceiling while draining a
+        # policy would_block event once cumulative steps cross it. check_policy's
+        # drain must PROPAGATE it (hard stop), not swallow it as a fail-open
+        # `clyro_policy_event_drain_failed` (the bug seen with a low ceiling).
+        from unittest.mock import MagicMock
+
+        from clyro.dry_run import build_would_block_event
+
+        s = Session(
+            config=ClyroConfig(
+                controls=ExecutionControls(
+                    enforcement_mode="dry_run", enable_step_limit=False, absolute_max_steps=1
+                )
+            )
+        )
+        s._step_number = 5  # already past the ceiling of 1
+        evaluator = MagicMock()
+        evaluator.evaluate_sync.return_value = None
+        evaluator.drain_events.return_value = [
+            build_would_block_event(session_id=s.session_id, check_type="policy", action="x")
+        ]
+        s._policy_evaluator = evaluator
+
+        with pytest.raises(AbsoluteCeilingExceededError) as exc:
+            s.check_policy("tool_call", {"x": 1})
+        assert exc.value.dimension == "step"
 
 
 class TestDisabledStaysSilent:
@@ -249,7 +323,9 @@ class TestCloudPolicy:
 
     def test_dry_run_allow_stays_policy_check(self):
         pe = _cloud_evaluator("dry_run")
-        ev = pe.create_policy_check_event(PolicyDecision(decision="allow"), "tool_call", {}, uuid4(), 1)
+        ev = pe.create_policy_check_event(
+            PolicyDecision(decision="allow"), "tool_call", {}, uuid4(), 1
+        )
         assert ev.event_type == EventType.POLICY_CHECK
 
     def test_dry_run_enforce_decision_no_raise_no_handler(self):
@@ -263,14 +339,20 @@ class TestCloudPolicy:
         # FRD-008: a matched local YAML rule must short-circuit the backend so a
         # single action never records TWO would_blocks (local + backend).
         rule = SimpleNamespace(
-            parameter="amount", operator="max_value", value=100, action="block",
-            name="big", policy_id="local1",
+            parameter="amount",
+            operator="max_value",
+            value=100,
+            action="block",
+            name="big",
+            policy_id="local1",
         )
         monkeypatch.setattr(
-            lp, "load_sdk_policies",
+            lp,
+            "load_sdk_policies",
             lambda: SimpleNamespace(
                 actions={"tool_call": SimpleNamespace(policies=[rule])},
-                global_=None, default_action="allow",
+                global_=None,
+                default_action="allow",
             ),
         )
         pe = _cloud_evaluator("dry_run")
@@ -282,15 +364,45 @@ class TestCloudPolicy:
         assert len(wb) == 1
         assert wb[0].metadata["would_block"]["rule_id"] == "local1"  # local short-circuits
 
+    def test_dry_run_backend_error_allows_and_latches(self):
+        # A10 regression: with fail_open=False a policy-backend error must NOT
+        # hard-block in dry_run — record then allow. A persistent outage must record
+        # exactly ONE would_block (latched), not one stdout line/event per call.
+        cfg = ClyroConfig(
+            api_key="cly_test",
+            endpoint="http://x",
+            fail_open=False,
+            controls=ExecutionControls(enable_policy_enforcement=True, enforcement_mode="dry_run"),
+        )
+        pe = PolicyEvaluator(config=cfg, agent_id=uuid4())
+
+        def boom(**kw):
+            raise RuntimeError("policy backend down")
+
+        pe._client.evaluate_sync = boom
+        sid = uuid4()
+        for _ in range(20):
+            decision = pe.evaluate_sync("tool_call", {"amount": 5}, sid, 1)
+            assert decision.is_allowed  # never hard-blocks in dry_run
+
+        wb = [e for e in pe.drain_events() if e.event_type == EventType.WOULD_BLOCK]
+        assert len(wb) == 1  # latched: one marker for the persistent outage
+        assert wb[0].metadata["would_block"]["rule_id"] == "system_error"
+
 
 def _local_cfg(action):
     rule = SimpleNamespace(
-        parameter="amount", operator="max_value", value=100, action=action,
-        name="big", policy_id="p1",
+        parameter="amount",
+        operator="max_value",
+        value=100,
+        action=action,
+        name="big",
+        policy_id="p1",
     )
     return SimpleNamespace(
         actions={"tool_call": SimpleNamespace(policies=[rule])},
-        global_=None, default_action="allow",
+        global_=None,
+        default_action="allow",
     )
 
 
@@ -452,9 +564,10 @@ class TestSinkNeverSilentlyDrops:
         w._sink_tasks = set()
         w._transport = SyncTransport(cfg)
         stored: list = []
-        w._transport._transport._storage.store_event = (
-            lambda e, priority=None: (stored.append(e), True)[1]
-        )
+        w._transport._transport._storage.store_event = lambda e, priority=None: (
+            stored.append(e),
+            True,
+        )[1]
         return w, stored
 
     def _event(self):
@@ -554,9 +667,7 @@ class TestOpenAIAdapterDryRunThreading:
 
         cfg = ClyroConfig(
             mode="local",
-            controls=ExecutionControls(
-                enable_policy_enforcement=True, enforcement_mode=mode_str
-            ),
+            controls=ExecutionControls(enable_policy_enforcement=True, enforcement_mode=mode_str),
         )
         ad = OpenAIAdapter.__new__(OpenAIAdapter)
         ad._config = cfg

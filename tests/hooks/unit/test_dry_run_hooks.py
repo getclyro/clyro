@@ -27,10 +27,12 @@ def mock_sessions_dir(tmp_path):
     sessions.mkdir()
     pending = tmp_path / "pending"
     pending.mkdir()
-    with patch("clyro.hooks.state.SESSIONS_DIR", sessions), \
-         patch("clyro.hooks.backend.EVENT_QUEUE_DIR", pending), \
-         patch("clyro.hooks.evaluator.load_state") as mock_load, \
-         patch("clyro.hooks.evaluator.save_state"):
+    with (
+        patch("clyro.hooks.state.SESSIONS_DIR", sessions),
+        patch("clyro.hooks.backend.EVENT_QUEUE_DIR", pending),
+        patch("clyro.hooks.evaluator.load_state") as mock_load,
+        patch("clyro.hooks.evaluator.save_state"),
+    ):
         mock_load.return_value = SessionState(session_id="test-session")
         yield {"load_state": mock_load, "pending": pending}
 
@@ -46,13 +48,15 @@ def _reset_dry_run():
 
 
 def _config(tmp_path, dry_run: bool):
-    return HookConfig.model_validate({
-        "default_action": "allow",
-        "global": {"max_steps": 50, "max_cost_usd": 10.0},
-        "audit": {"log_path": str(tmp_path / "audit.jsonl")},
-        "backend": {},
-        "dry_run": dry_run,
-    })
+    return HookConfig.model_validate(
+        {
+            "default_action": "allow",
+            "global": {"max_steps": 50, "max_cost_usd": 10.0},
+            "audit": {"log_path": str(tmp_path / "audit.jsonl")},
+            "backend": {},
+            "dry_run": dry_run,
+        }
+    )
 
 
 def _enqueued_events(pending):
@@ -106,19 +110,25 @@ class TestHooksWouldBlockEvent:
         # FRD-017: would_block event present; NO policy_check(block)/error sibling.
         # FRD-018: every event carries the dry_run marker.
         mock_sessions_dir["load_state"].return_value = SessionState(
-            session_id="test-session", step_count=50, agent_id="agent-1",
+            session_id="test-session",
+            step_count=50,
+            agent_id="agent-1",
         )
-        cfg = HookConfig.model_validate({
-            "default_action": "allow",
-            "global": {"max_steps": 50, "max_cost_usd": 10.0},
-            "audit": {"log_path": str(tmp_path / "audit.jsonl")},
-            "backend": {"api_key": "cly_test", "agent_name": "a"},
-            "dry_run": True,
-        })
+        cfg = HookConfig.model_validate(
+            {
+                "default_action": "allow",
+                "global": {"max_steps": 50, "max_cost_usd": 10.0},
+                "audit": {"log_path": str(tmp_path / "audit.jsonl")},
+                "backend": {"api_key": "cly_test", "agent_name": "a"},
+                "dry_run": True,
+            }
+        )
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
         with patch.object(HookConfig, "resolved_api_key", "cly_test"):
             evaluate(
-                HookInput(session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}),
+                HookInput(
+                    session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}
+                ),
                 cfg,
                 audit,
             )
@@ -146,20 +156,24 @@ class TestHooksWouldBlockLatch:
 
     def _run(self, tmp_path, state, n):
         audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
-        cfg = HookConfig.model_validate({
-            "default_action": "allow",
-            "global": {"max_steps": 50, "max_cost_usd": 10.0},
-            "audit": {"log_path": str(tmp_path / "audit.jsonl")},
-            "backend": {"api_key": "cly_test", "agent_name": "a"},
-            "dry_run": True,
-        })
+        cfg = HookConfig.model_validate(
+            {
+                "default_action": "allow",
+                "global": {"max_steps": 50, "max_cost_usd": 10.0},
+                "audit": {"log_path": str(tmp_path / "audit.jsonl")},
+                "backend": {"api_key": "cly_test", "agent_name": "a"},
+                "dry_run": True,
+            }
+        )
         for i in range(n):
             evaluate(
                 HookInput(
-                    session_id="test-session", tool_name="Bash",
+                    session_id="test-session",
+                    tool_name="Bash",
                     tool_input={"command": f"ls {i}"},
                 ),
-                cfg, audit,
+                cfg,
+                audit,
             )
         audit.close()
 
@@ -196,10 +210,14 @@ class TestHooksFailClosedRelaxation:
 
         args = type("A", (), {"config": None})()
         cfg = _config(tmp_path, dry_run=True)
-        with patch("clyro.hooks.cli.load_hook_config", return_value=cfg), \
-             patch("clyro.hooks.cli.StateLock") as lock, \
-             patch("clyro.hooks.cli._read_stdin", return_value={
-                 "session_id": "s1", "tool_name": "Bash", "tool_input": {}}):
+        with (
+            patch("clyro.hooks.cli.load_hook_config", return_value=cfg),
+            patch("clyro.hooks.cli.StateLock") as lock,
+            patch(
+                "clyro.hooks.cli._read_stdin",
+                return_value={"session_id": "s1", "tool_name": "Bash", "tool_input": {}},
+            ),
+        ):
             lock.return_value.__enter__ = lambda *a: (_ for _ in ()).throw(TimeoutError())
             result = hooks_cli.cmd_evaluate(args)
         assert result == hooks_cli.EXIT_FAIL_OPEN  # allow, not fail-closed
@@ -209,10 +227,135 @@ class TestHooksFailClosedRelaxation:
 
         args = type("A", (), {"config": None})()
         cfg = _config(tmp_path, dry_run=False)
-        with patch("clyro.hooks.cli.load_hook_config", return_value=cfg), \
-             patch("clyro.hooks.cli.StateLock") as lock, \
-             patch("clyro.hooks.cli._read_stdin", return_value={
-                 "session_id": "s1", "tool_name": "Bash", "tool_input": {}}):
+        with (
+            patch("clyro.hooks.cli.load_hook_config", return_value=cfg),
+            patch("clyro.hooks.cli.StateLock") as lock,
+            patch(
+                "clyro.hooks.cli._read_stdin",
+                return_value={"session_id": "s1", "tool_name": "Bash", "tool_input": {}},
+            ),
+        ):
             lock.return_value.__enter__ = lambda *a: (_ for _ in ()).throw(TimeoutError())
             result = hooks_cli.cmd_evaluate(args)
         assert result == hooks_cli.EXIT_FAIL_CLOSED
+
+    def test_cmd_trace_sets_process_dry_run_marker(self, tmp_path):
+        # FRD-018 regression: PostToolUse/Stop hooks run in SEPARATE processes from
+        # evaluate(), so cmd_trace must set the process-level dry_run flag itself —
+        # otherwise the cost-bearing tool_call_observe / session_end events emit
+        # unmarked and leak into enforced cost/drift/ARI aggregation.
+        from clyro.hooks import cli as hooks_cli
+
+        args = type("A", (), {"config": None, "event": "tool-complete"})()
+        cfg = _config(tmp_path, dry_run=True)
+        with (
+            patch("clyro.hooks.cli.load_hook_config", return_value=cfg),
+            patch("clyro.hooks.cli.set_dry_run") as mock_set,
+            patch("clyro.hooks.cli.handle_tool_complete"),
+            patch(
+                "clyro.hooks.cli._read_stdin",
+                return_value={"session_id": "s1", "tool_name": "Bash", "tool_input": {}},
+            ),
+        ):
+            result = hooks_cli.cmd_trace(args)
+        assert result == hooks_cli.EXIT_OK
+        mock_set.assert_called_once_with(True)
+
+    def test_cmd_trace_sets_enforce_marker_off(self, tmp_path):
+        # Symmetric guard: in enforce mode the process flag is set False (no marker).
+        from clyro.hooks import cli as hooks_cli
+
+        args = type("A", (), {"config": None, "event": "tool-complete"})()
+        cfg = _config(tmp_path, dry_run=False)
+        with (
+            patch("clyro.hooks.cli.load_hook_config", return_value=cfg),
+            patch("clyro.hooks.cli.set_dry_run") as mock_set,
+            patch("clyro.hooks.cli.handle_tool_complete"),
+            patch(
+                "clyro.hooks.cli._read_stdin",
+                return_value={"session_id": "s1", "tool_name": "Bash", "tool_input": {}},
+            ),
+        ):
+            result = hooks_cli.cmd_trace(args)
+        assert result == hooks_cli.EXIT_OK
+        mock_set.assert_called_once_with(False)
+
+
+class TestHooksAbsoluteCeiling:
+    """FRD-021 parity on hooks: a hard ceiling that blocks even in dry_run — the
+    one thing dry_run cannot relax to allow, matching the SDK and MCP wrapper."""
+
+    def _cfg(
+        self, tmp_path, *, dry_run, absolute_max_steps=1_000_000, absolute_max_cost_usd=100_000.0
+    ):
+        return HookConfig.model_validate(
+            {
+                "default_action": "allow",
+                "global": {
+                    "max_steps": 50,
+                    "max_cost_usd": 10.0,
+                    "absolute_max_steps": absolute_max_steps,
+                    "absolute_max_cost_usd": absolute_max_cost_usd,
+                },
+                "audit": {"log_path": str(tmp_path / "audit.jsonl")},
+                "backend": {},
+                "dry_run": dry_run,
+            }
+        )
+
+    def test_step_ceiling_hard_blocks_even_in_dry_run(self, mock_sessions_dir, tmp_path):
+        # next_step = 6 > absolute_max_steps = 5 → hard block despite dry_run.
+        mock_sessions_dir["load_state"].return_value = SessionState(
+            session_id="test-session", step_count=5
+        )
+        audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
+        result = evaluate(
+            HookInput(session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}),
+            self._cfg(tmp_path, dry_run=True, absolute_max_steps=5),
+            audit,
+        )
+        assert result is not None and result.decision == "block"  # NOT relaxed to allow
+        audit.close()
+
+    def test_cost_ceiling_hard_blocks_even_in_dry_run(self, mock_sessions_dir, tmp_path):
+        mock_sessions_dir["load_state"].return_value = SessionState(
+            session_id="test-session", step_count=1, accumulated_cost_usd=5.0
+        )
+        audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
+        result = evaluate(
+            HookInput(session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}),
+            self._cfg(tmp_path, dry_run=True, absolute_max_cost_usd=1.0),
+            audit,
+        )
+        assert result is not None and result.decision == "block"
+        audit.close()
+
+    def test_soft_breach_below_ceiling_still_allows_in_dry_run(self, mock_sessions_dir, tmp_path):
+        # Soft step limit (50) exceeded but ceiling (default 1M) far above → the soft
+        # block still record-and-allows in dry_run; the ceiling does not interfere.
+        mock_sessions_dir["load_state"].return_value = SessionState(
+            session_id="test-session", step_count=50
+        )
+        audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
+        result = evaluate(
+            HookInput(session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}),
+            self._cfg(tmp_path, dry_run=True),
+            audit,
+        )
+        assert result is None  # allow — soft breach relaxed, ceiling not reached
+        audit.close()
+
+    def test_enforce_mode_ceiling_also_blocks(self, mock_sessions_dir, tmp_path):
+        # Sanity: in enforce mode the ceiling blocks too (soft limit would anyway,
+        # but confirm the new stage doesn't break enforce).
+        mock_sessions_dir["load_state"].return_value = SessionState(
+            session_id="test-session", step_count=5
+        )
+        audit = AuditLogger(log_path=tmp_path / "audit.jsonl")
+        result = evaluate(
+            HookInput(session_id="test-session", tool_name="Bash", tool_input={"command": "ls"}),
+            self._cfg(tmp_path, dry_run=False, absolute_max_steps=5),
+            audit,
+        )
+        assert result is not None and result.decision == "block"
+        audit.close()

@@ -523,7 +523,7 @@ Each finding is also recorded as a trace event with `event_type="would_block"`, 
 
 ### What dry-run does not suppress
 
-- **Absolute ceilings** (`absolute_max_steps`, `absolute_max_cost_usd`) still raise in dry-run. They are the runaway-agent backstop and cannot be disabled.
+- **Absolute ceilings** (`global.absolute_max_steps`, default 1,000,000; `global.absolute_max_cost_usd`, default $100,000) still hard-block in dry-run. Once cumulative steps or cost cross the ceiling, the wrapper returns a real JSON-RPC error to the host (`absolute_step_ceiling` / `absolute_cost_ceiling`) and does **not** forward the call — the runaway-agent backstop cannot be disabled or relaxed by dry-run. Set them high above your soft `max_steps` / `max_cost_usd` so they only ever fire on a genuine runaway.
 - **Approval handlers are skipped.** A `require_approval` policy records a marker and proceeds; the approval handler is never invoked, so an unattended run cannot hang waiting on a prompt.
 
 Dry-run events are excluded from all analytics read paths: Reliability Score, drift detection, and dashboards, so a monitor-mode session never moves your metrics.

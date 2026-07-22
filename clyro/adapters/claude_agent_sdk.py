@@ -1528,6 +1528,11 @@ class ClaudeAgentHandler:
             self._events.append(event)
             if not self._is_wrapped and self._session:
                 self._session.record_event(event)
+        except AbsoluteCeilingExceededError:
+            # A10 FRD-021: the absolute ceiling is a HARD stop that halts the agent
+            # even in dry_run. It must NOT be swallowed as infra fail-open here —
+            # let it propagate to _safe_hook's dedicated hard-stop handler.
+            raise
         except Exception:
             logger.exception("clyro_record_event_error")
 

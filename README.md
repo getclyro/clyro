@@ -350,8 +350,12 @@ records one event, not 500.
 
 **What dry-run does not suppress:**
 
-- **Absolute ceilings** (`absolute_max_steps`, `absolute_max_cost_usd`) still raise.
-  They are the runaway-agent backstop and cannot be disabled.
+- **Absolute ceilings** (`absolute_max_steps`, default 1,000,000; `absolute_max_cost_usd`,
+  default $100,000) still fire. They are the runaway-agent backstop and cannot be disabled
+  or relaxed by dry-run. This holds on **all three surfaces**: the SDK raises
+  `AbsoluteCeilingExceededError`; the MCP wrapper returns a hard JSON-RPC error and does not
+  forward the call; the Claude Code hook returns a real block so the tool does not run.
+  (SDK: `ExecutionControls.absolute_max_*`; MCP/hooks: `global.absolute_max_*` in the config file.)
 - **Approval handlers are skipped**: a `require_approval` policy records a marker and
   proceeds, so an unattended run cannot hang waiting on a prompt.
 

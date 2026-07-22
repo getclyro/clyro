@@ -180,7 +180,7 @@ class ExecutionControls(BaseModel):
     )
     absolute_max_cost_usd: float = Field(
         default=100_000.0,
-        ge=0.0,
+        gt=0,
         description="Hard ceiling on cumulative cost USD; raises even in dry_run (FRD-021)",
     )
 
@@ -796,6 +796,26 @@ class GlobalConfig(BaseModel):
     cost_per_token_usd: float = Field(default=0.00001, gt=0)
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)
     policies: list[PolicyRule] = Field(default_factory=list)
+
+    # A10 absolute safety ceiling for the MCP wrapper and Claude Code hooks.
+    # Implements FRD-021 — parity with the SDK's ExecutionControls.absolute_max_*.
+    #
+    # A hard, non-disableable stop that blocks a call regardless of enforcement_mode
+    # (it blocks even in dry_run) and regardless of the soft ``max_steps`` /
+    # ``max_cost_usd`` limits. Set FAR above the soft maxima so it never fires in
+    # ordinary use — it bounds the "dry-run stops nothing" footgun so a genuine
+    # runaway loop / cost cannot run unbounded on these surfaces the way it cannot
+    # on the SDK. Raise these only if a legitimate long-running session needs more.
+    absolute_max_steps: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Hard ceiling on cumulative steps; blocks even in dry_run (FRD-021)",
+    )
+    absolute_max_cost_usd: float = Field(
+        default=100_000.0,
+        gt=0,
+        description="Hard ceiling on cumulative cost USD; blocks even in dry_run (FRD-021)",
+    )
 
 
 class BackendConfig(BaseModel):
