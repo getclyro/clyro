@@ -677,17 +677,23 @@ class TracedCompletions:
             raise
 
         # Execution controls — step / cost / loop limits (increments the step).
+        # llm_step is this call's own step; it is threaded through rather than
+        # re-read from the session, which concurrent calls advance underneath us.
+        llm_step = 0
         try:
-            self._check_prevention_stack(session, kwargs)
+            llm_step = self._check_prevention_stack(session, kwargs)
         except ExecutionControlError as e:
             self._emit_error_event(session, e, kwargs, 0)  # audit record of the limit hit
             self._auto_flush(session)
             raise
         except Exception:
             logger.warning("clyro_prevention_stack_failed", fail_open=True)
+            # Fail-open: the step was not allocated, so fall back to the session's
+            # current step rather than emitting events numbered 0.
+            llm_step = session.step_number
 
         if kwargs.get("stream"):
-            return self._create_streaming(session, kwargs)  # Implements FRD-SDK-006
+            return self._create_streaming(session, kwargs, llm_step)  # Implements FRD-SDK-006
 
         start_time = time.perf_counter()
         try:
@@ -699,34 +705,55 @@ class TracedCompletions:
             raise  # FRD-SDK-002: re-raise the original exception unchanged
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        self._handle_response(session, response, kwargs, duration_ms)
+        self._handle_response(session, response, kwargs, duration_ms, llm_step)
         return response
 
     # -- prevention stack + policy (pre-call) ----------------------------
 
-    def _check_prevention_stack(self, session: Session, kwargs: dict[str, Any]) -> None:
-        """Enforce execution controls before the call — step/cost/loop limits.
+    def _next_step(self, session: Session) -> int:
+        """Allocate the next step number and enforce the step limit.  # Implements FRD-008
 
-        Parity with the other adapters' Prevention Stack: raises StepLimit/
-        CostLimitExceededError (or a loop error) when a configured limit is hit.
+        Called once per LLM call (pre-call, from the prevention stack) and once
+        per tool call, so a step means "one unit of agent work" — matching the
+        event-based counting the other adapters get from Session.record_event().
+        Counting only LLM calls made OpenAI runs report far fewer steps than the
+        same workload on Anthropic/LangGraph/CrewAI/Claude Agent SDK.
+
+        Returns the allocated step number. Callers MUST use the returned value
+        rather than re-reading session.step_number later: concurrent calls on one
+        client share the session, so the counter can advance before the caller
+        emits its events.
         """
         controls = self._config.controls
         session._step_number += 1
+        step = session.step_number
         # FRD-021: non-disableable absolute ceiling — fires even in dry_run and even
         # with soft limits off. This adapter bypasses session.record_event(), so the
         # ceiling must be checked here; it propagates via the caller's
         # ExecutionControlError handler.
         session._check_absolute_ceiling()
-        if controls.enable_step_limit and session.step_number > controls.max_steps:
+        if controls.enable_step_limit and step > controls.max_steps:
             # A10 dry-run: record a would-block and proceed (FRD-020/022).
             if session.is_dry_run:
-                session._emit_would_block("step", f"step_{session.step_number}", dedup_key="step")
+                session._emit_would_block("step", f"step_{step}", dedup_key="step")
             else:
                 raise StepLimitExceededError(
                     limit=controls.max_steps,
-                    current_step=session.step_number,
+                    current_step=step,
                     session_id=str(session.session_id),
                 )
+        return step
+
+    def _check_prevention_stack(self, session: Session, kwargs: dict[str, Any]) -> int:
+        """Enforce execution controls before the call — step/cost/loop limits.
+
+        Parity with the other adapters' Prevention Stack: raises StepLimit/
+        CostLimitExceededError (or a loop error) when a configured limit is hit.
+
+        Returns the step number allocated to this LLM call.
+        """
+        controls = self._config.controls
+        llm_step = self._next_step(session)
         if controls.enable_cost_limit and float(session.cumulative_cost) >= controls.max_cost_usd:
             if session.is_dry_run:  # A10 dry-run (FRD-020/022)
                 session._emit_would_block(
@@ -737,12 +764,13 @@ class TracedCompletions:
                     limit_usd=controls.max_cost_usd,
                     current_cost_usd=float(session.cumulative_cost),
                     session_id=str(session.session_id),
-                    step_number=session.step_number,
+                    step_number=llm_step,
                 )
         if controls.enable_loop_detection:
             state = self._build_loop_state(kwargs)
             if state is not None:
                 session._check_loop_detection(state, action="chat.completions.create")
+        return llm_step
 
     def _enforce_cost_limit_post_call(
         self, session: Session, kwargs: dict[str, Any], duration_ms: int
@@ -866,7 +894,12 @@ class TracedCompletions:
     # -- buffered response handling --------------------------------------
 
     def _handle_response(
-        self, session: Session, response: Any, kwargs: dict[str, Any], duration_ms: int
+        self,
+        session: Session,
+        response: Any,
+        kwargs: dict[str, Any],
+        duration_ms: int,
+        llm_step: int,
     ) -> None:
         llm_event_id = None
         try:
@@ -888,6 +921,7 @@ class TracedCompletions:
                 input_data,
                 output_data,
                 estimated=False,
+                llm_step=llm_step,
             )
         except Exception:
             logger.warning("clyro_process_response_failed", fail_open=True)
@@ -913,6 +947,13 @@ class TracedCompletions:
         except PolicyViolationError:
             self._auto_flush(session)  # persist the POLICY_CHECK record before raising
             raise
+        except ExecutionControlError as e:
+            # A per-tool step allocation hit the step limit — propagate (like a
+            # policy block) instead of being swallowed by the fail-open below.
+            # Emit the ERROR audit record first, matching the pre-call limit path.
+            self._emit_error_event(session, e, kwargs, duration_ms)
+            self._auto_flush(session)
+            raise
         except Exception:
             logger.warning("clyro_process_tool_calls_failed", fail_open=True)
 
@@ -923,7 +964,7 @@ class TracedCompletions:
 
     # -- streamed response handling (FRD-SDK-006) ------------------------
 
-    def _create_streaming(self, session: Session, kwargs: dict[str, Any]) -> Any:
+    def _create_streaming(self, session: Session, kwargs: dict[str, Any], llm_step: int) -> Any:
         # Ask the provider to include usage in the final chunk so streamed cost is
         # real, not estimated (NFR-SDK-006) — but only on endpoints known to accept
         # it (OpenAI/OpenRouter) and only when the caller didn't set stream_options.
@@ -939,7 +980,7 @@ class TracedCompletions:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             self._emit_error_event(session, e, kwargs, duration_ms)
             raise
-        return self._wrap_stream(session, stream, kwargs, start_time, injected_usage)
+        return self._wrap_stream(session, stream, kwargs, start_time, injected_usage, llm_step)
 
     def _wrap_stream(
         self,
@@ -948,6 +989,7 @@ class TracedCompletions:
         kwargs: dict[str, Any],
         start_time: float,
         injected_usage: bool,
+        llm_step: int,
     ) -> Any:
         """Yield chunks to the caller, accumulate, then emit on completion (FRD-SDK-006)."""
         model = kwargs.get("model") or ""
@@ -986,7 +1028,15 @@ class TracedCompletions:
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         self._finalize_stream(
-            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms
+            session,
+            model,
+            usage,
+            finish_reason,
+            content_parts,
+            tool_acc,
+            kwargs,
+            duration_ms,
+            llm_step,
         )
 
     @staticmethod
@@ -1028,6 +1078,7 @@ class TracedCompletions:
         tool_acc: dict[int, dict[str, Any]],
         kwargs: dict[str, Any],
         duration_ms: int,
+        llm_step: int,
     ) -> None:
         llm_event_id = None
         try:
@@ -1059,6 +1110,7 @@ class TracedCompletions:
                 input_data,
                 output_data,
                 estimated=estimated,
+                llm_step=llm_step,
             )
         except Exception:
             logger.warning("clyro_stream_finalize_failed", fail_open=True)
@@ -1076,6 +1128,10 @@ class TracedCompletions:
             for name, arguments, _ in tools:
                 self._evaluate_tool_policy(session, name, arguments, llm_event_id)
         except PolicyViolationError:
+            self._auto_flush(session)
+            raise
+        except ExecutionControlError as e:
+            self._emit_error_event(session, e, kwargs, duration_ms)
             self._auto_flush(session)
             raise
         except Exception:
@@ -1147,8 +1203,13 @@ class TracedCompletions:
         output_data: dict[str, Any] | None,
         *,
         estimated: bool,
+        llm_step: int,
     ) -> UUID:
-        """Compute cost, emit an LLM_CALL event, return its id.  # Implements FRD-SDK-002, FRD-SDK-005"""
+        """Compute cost, emit an LLM_CALL event, return its id.  # Implements FRD-SDK-002, FRD-SDK-005
+
+        llm_step is this call's own step, threaded from the prevention stack —
+        session.step_number may have advanced (tool steps, concurrent calls).
+        """
         cost_usd = self._compute_cost(input_tokens, output_tokens, cached_tokens, model)
         session._cumulative_cost += cost_usd
         event_id = uuid4()
@@ -1159,7 +1220,7 @@ class TracedCompletions:
             metadata["estimated"] = True  # VR-S3
         event = create_llm_call_event(
             session_id=session.session_id,
-            step_number=session.step_number,
+            step_number=llm_step,
             model=model,
             input_data=input_data or {"model": model},
             output_data=output_data,
@@ -1190,11 +1251,16 @@ class TracedCompletions:
         tool_id: str | None,
         llm_event_id: UUID | None,
     ) -> None:
-        """Emit one TOOL_CALL event (no policy — see _evaluate_tool_policy).  # Implements FRD-SDK-003"""
+        """Emit one TOOL_CALL event (no policy — see _evaluate_tool_policy).  # Implements FRD-SDK-003
+
+        Each tool call is its own step (FRD-008), so may raise StepLimitExceededError.
+        """
+        self._next_step(session)
+        tool_step = session.step_number
         input_data = arguments if isinstance(arguments, dict) else {"arguments": arguments}
         event = create_tool_call_event(
             session_id=session.session_id,
-            step_number=session.step_number,
+            step_number=tool_step,
             tool_name=tool_name or "unknown",
             input_data=input_data,
             agent_id=self._agent_id,
@@ -1578,17 +1644,21 @@ class AsyncTracedCompletions(TracedCompletions):
             await self._auto_flush(session)
             raise
 
+        llm_step = 0
         try:
-            self._check_prevention_stack(session, kwargs)  # pure — inherited
+            llm_step = self._check_prevention_stack(session, kwargs)  # pure — inherited
         except ExecutionControlError as e:
             await self._emit_error_event(session, e, kwargs, 0)
             await self._auto_flush(session)
             raise
         except Exception:
             logger.warning("clyro_prevention_stack_failed", fail_open=True)
+            # Fail-open: the step was not allocated, so fall back to the session's
+            # current step rather than emitting events numbered 0.
+            llm_step = session.step_number
 
         if kwargs.get("stream"):
-            return await self._create_streaming(session, kwargs)  # Implements FRD-SDK-006
+            return await self._create_streaming(session, kwargs, llm_step)  # Implements FRD-SDK-006
 
         start_time = time.perf_counter()
         try:
@@ -1600,7 +1670,7 @@ class AsyncTracedCompletions(TracedCompletions):
             raise  # FRD-SDK-002: re-raise the original exception unchanged
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        await self._handle_response(session, response, kwargs, duration_ms)
+        await self._handle_response(session, response, kwargs, duration_ms, llm_step)
         return response
 
     # -- policy + auto-flush (async overrides) ---------------------------
@@ -1649,7 +1719,12 @@ class AsyncTracedCompletions(TracedCompletions):
     # -- buffered response handling (async) ------------------------------
 
     async def _handle_response(
-        self, session: Session, response: Any, kwargs: dict[str, Any], duration_ms: int
+        self,
+        session: Session,
+        response: Any,
+        kwargs: dict[str, Any],
+        duration_ms: int,
+        llm_step: int,
     ) -> None:
         llm_event_id = None
         try:
@@ -1671,6 +1746,7 @@ class AsyncTracedCompletions(TracedCompletions):
                 input_data,
                 output_data,
                 estimated=False,
+                llm_step=llm_step,
             )
         except Exception:
             logger.warning("clyro_process_response_failed", fail_open=True)
@@ -1685,6 +1761,10 @@ class AsyncTracedCompletions(TracedCompletions):
         except PolicyViolationError:
             await self._auto_flush(session)
             raise
+        except ExecutionControlError as e:
+            await self._emit_error_event(session, e, kwargs, duration_ms)
+            await self._auto_flush(session)
+            raise
         except Exception:
             logger.warning("clyro_process_tool_calls_failed", fail_open=True)
 
@@ -1693,7 +1773,9 @@ class AsyncTracedCompletions(TracedCompletions):
 
     # -- streamed response handling (async, FRD-SDK-006) ----------------
 
-    async def _create_streaming(self, session: Session, kwargs: dict[str, Any]) -> Any:
+    async def _create_streaming(
+        self, session: Session, kwargs: dict[str, Any], llm_step: int
+    ) -> Any:
         injected_usage = False
         if "stream_options" not in kwargs and self._inject_stream_usage:
             kwargs = {**kwargs, "stream_options": {"include_usage": True}}
@@ -1706,7 +1788,7 @@ class AsyncTracedCompletions(TracedCompletions):
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             await self._emit_error_event(session, e, kwargs, duration_ms)
             raise
-        return self._wrap_stream(session, stream, kwargs, start_time, injected_usage)
+        return self._wrap_stream(session, stream, kwargs, start_time, injected_usage, llm_step)
 
     async def _wrap_stream(
         self,
@@ -1715,6 +1797,7 @@ class AsyncTracedCompletions(TracedCompletions):
         kwargs: dict[str, Any],
         start_time: float,
         injected_usage: bool,
+        llm_step: int,
     ) -> Any:
         """Async-generator: yield chunks, accumulate, emit on completion (FRD-SDK-006)."""
         model = kwargs.get("model") or ""
@@ -1751,7 +1834,15 @@ class AsyncTracedCompletions(TracedCompletions):
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         await self._finalize_stream(
-            session, model, usage, finish_reason, content_parts, tool_acc, kwargs, duration_ms
+            session,
+            model,
+            usage,
+            finish_reason,
+            content_parts,
+            tool_acc,
+            kwargs,
+            duration_ms,
+            llm_step,
         )
 
     async def _finalize_stream(
@@ -1764,6 +1855,7 @@ class AsyncTracedCompletions(TracedCompletions):
         tool_acc: dict[int, dict[str, Any]],
         kwargs: dict[str, Any],
         duration_ms: int,
+        llm_step: int,
     ) -> None:
         llm_event_id = None
         try:
@@ -1795,6 +1887,7 @@ class AsyncTracedCompletions(TracedCompletions):
                 input_data,
                 output_data,
                 estimated=estimated,
+                llm_step=llm_step,
             )
         except Exception:
             logger.warning("clyro_stream_finalize_failed", fail_open=True)
@@ -1809,6 +1902,10 @@ class AsyncTracedCompletions(TracedCompletions):
             for name, arguments, _ in tools:
                 await self._evaluate_tool_policy(session, name, arguments, llm_event_id)
         except PolicyViolationError:
+            await self._auto_flush(session)
+            raise
+        except ExecutionControlError as e:
+            await self._emit_error_event(session, e, kwargs, duration_ms)
             await self._auto_flush(session)
             raise
         except Exception:
@@ -1831,6 +1928,7 @@ class AsyncTracedCompletions(TracedCompletions):
         output_data: dict[str, Any] | None,
         *,
         estimated: bool,
+        llm_step: int,
     ) -> UUID:
         """Compute cost, emit an LLM_CALL event, return its id (async).  # Implements FRD-SDK-002, FRD-SDK-005"""
         cost_usd = self._compute_cost(input_tokens, output_tokens, cached_tokens, model)  # pure
@@ -1843,7 +1941,7 @@ class AsyncTracedCompletions(TracedCompletions):
             metadata["estimated"] = True  # VR-S3
         event = create_llm_call_event(
             session_id=session.session_id,
-            step_number=session.step_number,
+            step_number=llm_step,
             model=model,
             input_data=input_data or {"model": model},
             output_data=output_data,
@@ -1874,11 +1972,16 @@ class AsyncTracedCompletions(TracedCompletions):
         tool_id: str | None,
         llm_event_id: UUID | None,
     ) -> None:
-        """Emit one TOOL_CALL event (async; no policy — see _evaluate_tool_policy).  # Implements FRD-SDK-003"""
+        """Emit one TOOL_CALL event (async; no policy — see _evaluate_tool_policy).  # Implements FRD-SDK-003
+
+        Each tool call is its own step (FRD-008), so may raise StepLimitExceededError.
+        """
+        self._next_step(session)
+        tool_step = session.step_number
         input_data = arguments if isinstance(arguments, dict) else {"arguments": arguments}
         event = create_tool_call_event(
             session_id=session.session_id,
-            step_number=session.step_number,
+            step_number=tool_step,
             tool_name=tool_name or "unknown",
             input_data=input_data,
             agent_id=self._agent_id,

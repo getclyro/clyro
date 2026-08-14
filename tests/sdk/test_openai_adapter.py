@@ -437,6 +437,54 @@ class TestExecutionControls:
             traced.chat.completions.create(model="gpt-4o", messages=[])  # step 2 > limit
         traced.close()
 
+    def test_tool_calls_count_as_steps(self):
+        """Each tool call is its own step, matching the event-based adapters (FRD-008).
+
+        Counting only LLM calls made the same workload report far fewer steps on
+        OpenAI than on Anthropic/LangGraph/CrewAI/Claude Agent SDK.
+        """
+        cfg = ClyroConfig(
+            agent_name="t",
+            controls=ExecutionControls(
+                max_steps=1000, enable_step_limit=True, enable_loop_detection=False
+            ),
+        )
+        tool_calls = [MockToolCall(f"call_{i}", f"tool_{i}", "{}") for i in range(4)]
+        resp = MockCompletion(
+            choices=[
+                MockChoice(MockMessage(content=None, tool_calls=tool_calls), finish_reason="tool_calls")
+            ]
+        )
+        traced = _traced(MockOpenAIClient(MockCompletions(resp)), cfg)
+        traced.chat.completions.create(model="gpt-4o", messages=[])
+        # 1 LLM call + 4 tool calls = 5 steps (not 1)
+        assert traced._session.step_number == 5
+        traced.close()
+
+    def test_step_limit_trips_mid_tool_loop(self):
+        """The limit can be hit by tool calls, not only by LLM calls."""
+        cfg = ClyroConfig(
+            agent_name="t",
+            controls=ExecutionControls(
+                max_steps=3, enable_step_limit=True, enable_loop_detection=False
+            ),
+        )
+        tool_calls = [MockToolCall(f"call_{i}", f"tool_{i}", "{}") for i in range(4)]
+        resp = MockCompletion(
+            choices=[
+                MockChoice(MockMessage(content=None, tool_calls=tool_calls), finish_reason="tool_calls")
+            ]
+        )
+        traced = _traced(MockOpenAIClient(MockCompletions(resp)), cfg)
+        # step 1 = LLM call, steps 2-3 = first two tools, tool 3 exceeds max_steps=3.
+        with pytest.raises(StepLimitExceededError):
+            traced.chat.completions.create(model="gpt-4o", messages=[])
+        # The limit hit is audited, same as a pre-call limit hit.
+        errors = [e for e in traced._session._events if e.event_type == EventType.ERROR]
+        assert len(errors) == 1
+        assert errors[0].error_type == "StepLimitExceededError"
+        traced.close()
+
     def test_cost_limit_enforced(self):
         cfg = ClyroConfig(
             agent_name="t", controls=ExecutionControls(max_cost_usd=0.0000001, enable_cost_limit=True)
