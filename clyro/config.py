@@ -180,7 +180,7 @@ class ExecutionControls(BaseModel):
     )
     absolute_max_cost_usd: float = Field(
         default=100_000.0,
-        ge=0.0,
+        gt=0,
         description="Hard ceiling on cumulative cost USD; raises even in dry_run (FRD-021)",
     )
 
@@ -797,6 +797,26 @@ class GlobalConfig(BaseModel):
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)
     policies: list[PolicyRule] = Field(default_factory=list)
 
+    # A10 absolute safety ceiling for the MCP wrapper and Claude Code hooks.
+    # Implements FRD-021 — parity with the SDK's ExecutionControls.absolute_max_*.
+    #
+    # A hard, non-disableable stop that blocks a call regardless of enforcement_mode
+    # (it blocks even in dry_run) and regardless of the soft ``max_steps`` /
+    # ``max_cost_usd`` limits. Set FAR above the soft maxima so it never fires in
+    # ordinary use — it bounds the "dry-run stops nothing" footgun so a genuine
+    # runaway loop / cost cannot run unbounded on these surfaces the way it cannot
+    # on the SDK. Raise these only if a legitimate long-running session needs more.
+    absolute_max_steps: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Hard ceiling on cumulative steps; blocks even in dry_run (FRD-021)",
+    )
+    absolute_max_cost_usd: float = Field(
+        default=100_000.0,
+        gt=0,
+        description="Hard ceiling on cumulative cost USD; blocks even in dry_run (FRD-021)",
+    )
+
 
 class BackendConfig(BaseModel):
     """Backend integration config for MCP/hooks."""
@@ -812,6 +832,85 @@ class BackendConfig(BaseModel):
     pending_queue_max_mb: int = Field(default=10, ge=1, le=100)
 
 
+# TDD §3 lists these under "Fixed floors (NOT operator-configurable)": the
+# liveness bound (FRD-049/D15) and the reconnect cap (FRD-056/D19) are
+# *guarantees*, not preferences — FRD-056's bound is a DoS mitigation (TDD §12)
+# and FRD-049 promises a dead connection is noticed within the bound. Exposing
+# them as free knobs let an operator configure both protections away
+# (liveness_secs=99999 → never detected; max_attempts=1e6 → reconnect storm).
+# They remain settable in the *stricter* direction only, so the guarantee holds
+# whatever an operator writes.
+LIVENESS_MAX_SECS = 60  # FRD-049 (D15) — the guarantee, not merely a default
+RECONNECT_MAX_ATTEMPTS = 5  # FRD-056 (D19) — the cap, not merely a default
+
+
+class ReconnectConfig(BaseModel):
+    """Bounded reconnection settings for the HTTP transport (FRD-056, D19).
+
+    ``max_attempts`` may only be *lowered*: the ceiling is the FRD-056 cap
+    itself, so an operator can retry less, never more (TDD §3 fixed floor).
+    """
+
+    max_attempts: int = Field(default=RECONNECT_MAX_ATTEMPTS, ge=0, le=RECONNECT_MAX_ATTEMPTS)
+
+
+class ServerConfig(BaseModel):
+    """Remote-server settings used by the native HTTP transport.
+
+    Only consulted when ``transport == "http"``. Implements the config surface
+    for FRD-042/033/046/039/049/056.
+    """
+
+    url: str | None = Field(default=None, description="Remote target (required for http)")
+    auth_header: str = Field(
+        default="Authorization",
+        description=(
+            "Which header in `headers` carries the credential (FRD-033). The "
+            "credential is governed by the FRD-051/055 rules and masked from "
+            "records (FRD-034); naming it here is what makes both possible."
+        ),
+    )
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Static auth header (FRD-033). Only `auth_header` is sent — any other "
+            "key is rejected at load rather than dropped silently."
+        ),
+    )
+    ca_bundle: str | None = Field(default=None, description="Custom CA bundle path (FRD-046)")
+    allow_plaintext: bool = Field(
+        default=False, description="The single safety-floor relaxation (FRD-039)"
+    )
+    liveness_secs: int = Field(
+        default=LIVENESS_MAX_SECS,
+        ge=1,
+        le=LIVENESS_MAX_SECS,
+        description=(
+            "Transport liveness bound (FRD-049). May only be tightened — the "
+            f"{LIVENESS_MAX_SECS}s ceiling is the guarantee itself (TDD §3 fixed "
+            "floor), so a dead connection is always detected within it."
+        ),
+    )
+    reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
+
+    @model_validator(mode="after")
+    def _only_the_auth_header_is_supported(self) -> ServerConfig:
+        """Reject headers the transport would silently drop.
+
+        Only ``auth_header`` is carried onto requests. A header configured under
+        any other key used to be dropped *and* left unmasked in the audit log —
+        a silent double failure. Refusing at load makes that impossible.
+        """
+        unsupported = sorted(k for k in self.headers if k.lower() != self.auth_header.lower())
+        if unsupported:
+            raise ValueError(
+                f"server.headers only carries the credential header "
+                f"({self.auth_header!r}); unsupported: {unsupported}. Set "
+                f"server.auth_header if your credential uses a different header."
+            )
+        return self
+
+
 class WrapperConfig(BaseModel):
     """
     Root configuration model for MCP Wrapper and hooks.
@@ -823,6 +922,10 @@ class WrapperConfig(BaseModel):
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     backend: BackendConfig = Field(default_factory=BackendConfig)
+    # Native HTTP transport (FRD-022 default stdio; FRD-042 target). Absent from
+    # existing configs → defaults preserve current stdio behaviour exactly.
+    transport: Literal["stdio", "http"] = Field(default="stdio")
+    server: ServerConfig = Field(default_factory=ServerConfig)
     # A10 dry-run (monitor) mode for the CLI-launched surfaces. Implements FRD-001.
     # A boolean here (their configs are already flat booleans); the resolver
     # normalizes it to the same is_dry_run concept as the SDK enum.
@@ -897,13 +1000,19 @@ def load_mcp_config(config_path: str | None = None) -> WrapperConfig:
 
     try:
         data = yaml.safe_load(raw_text)
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        print(f"clyro-mcp: invalid config {resolved}: not valid YAML: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if data is None:
         return WrapperConfig(default_action="allow")
 
     if not isinstance(data, dict):
+        print(
+            f"clyro-mcp: invalid config {resolved}: expected a mapping at the top level, "
+            f"got {type(data).__name__}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Warn about unknown top-level keys (forward-compat)
@@ -922,7 +1031,8 @@ def load_mcp_config(config_path: str | None = None) -> WrapperConfig:
 
     try:
         return WrapperConfig.model_validate(data)
-    except ValidationError:
+    except ValidationError as exc:
+        print(f"clyro-mcp: invalid config {resolved}:\n{exc}", file=sys.stderr)
         sys.exit(1)
 
 

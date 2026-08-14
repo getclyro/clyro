@@ -61,6 +61,22 @@ def _build_reason(block_type: str, details: dict[str, Any]) -> str:
             reason += f" tool={tool_name}"
         return reason
 
+    if block_type == "absolute_step_ceiling":
+        step_count = details.get("step_count", "?")
+        ceiling = details.get("absolute_max_steps", "?")
+        return (
+            f"Absolute step ceiling reached — hard stop (step={step_count}, "
+            f"ceiling={ceiling}). This limit blocks even in dry_run mode (FRD-021)."
+        )
+
+    if block_type == "absolute_cost_ceiling":
+        accumulated = details.get("accumulated_cost_usd", "?")
+        ceiling = details.get("absolute_max_cost_usd", "?")
+        return (
+            f"Absolute cost ceiling reached — hard stop (accumulated=${accumulated}, "
+            f"ceiling=${ceiling}). This limit blocks even in dry_run mode (FRD-021)."
+        )
+
     return block_type
 
 
@@ -94,6 +110,33 @@ def format_error(
             "data": {
                 "type": block_type,
                 "details": details,
+                "issue_tracker": _ISSUE_TRACKER,
+            },
+        },
+    }
+
+    return json.dumps(error_response, default=str) + "\n"
+
+
+def format_transport_error(request_id: str | int | None, reason: str) -> str:
+    """Build a newline-terminated JSON-RPC error for a *transport* failure.
+
+    Implements FRD-020 (surface a transport error to the host rather than
+    exiting silently) and FRD-031 (a transport failure must be reportable to
+    the host in a form distinguishable from a governance block). It is made
+    distinguishable from :func:`format_error` on three axes: the error ``code``
+    (``-32001`` implementation-defined server error, not the policy block's
+    ``-32600``), the ``message`` prefix (``ClyroTransport:`` not
+    ``ClyroPolicy:``), and ``data.type`` (``transport_error``).
+    """
+    error_response: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {
+            "code": -32001,
+            "message": f"ClyroTransport: {reason}",
+            "data": {
+                "type": "transport_error",
                 "issue_tracker": _ISSUE_TRACKER,
             },
         },

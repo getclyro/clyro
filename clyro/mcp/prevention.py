@@ -49,6 +49,9 @@ class BlockDecision:
     tool_name: str
     step_number: int
     details: dict[str, Any] = field(default_factory=dict)
+    # FRD-021: when True this block is the non-suppressable absolute ceiling — the
+    # router must return a hard error to the host even in dry_run (never forward).
+    absolute: bool = False
 
 
 class PreventionStack:
@@ -96,6 +99,43 @@ class PreventionStack:
         """
         # Step counter increments before evaluation (FRD-005)
         step = session.increment_step()
+
+        # FRD-030: a zero-argument tools/call sends no ``arguments`` member
+        # (arguments is None). Normalise to an empty dict so every downstream
+        # stage receives a dict; a missing-arguments call must be governed, not
+        # crash the session.
+        arguments = arguments or {}
+
+        # 0. Absolute ceiling (FRD-021) — a HARD, non-suppressable stop that fires
+        # even in dry_run and even with the soft limits set high. It MUST be checked
+        # BEFORE the soft stages: in dry_run a soft block (loop/step/cost/policy) is
+        # forwarded (record-and-allow) and short-circuits this method, so a soft
+        # stage placed first would prevent the ceiling from ever being reached on a
+        # runaway. The router special-cases ``absolute=True`` and never forwards it.
+        # Cost here is the cumulative from prior responses (cost is known post-call),
+        # so a cost runaway is caught on the next call — as on the SDK adapters.
+        if step > self._config.global_.absolute_max_steps:
+            return BlockDecision(
+                block_type="absolute_step_ceiling",
+                tool_name=tool_name,
+                step_number=step,
+                details={
+                    "step_count": step,
+                    "absolute_max_steps": self._config.global_.absolute_max_steps,
+                },
+                absolute=True,
+            )
+        if session.accumulated_cost_usd > self._config.global_.absolute_max_cost_usd:
+            return BlockDecision(
+                block_type="absolute_cost_ceiling",
+                tool_name=tool_name,
+                step_number=step,
+                details={
+                    "accumulated_cost_usd": session.accumulated_cost_usd,
+                    "absolute_max_cost_usd": self._config.global_.absolute_max_cost_usd,
+                },
+                absolute=True,
+            )
 
         # 1. Loop Detection (FRD-004)
         is_loop, loop_details = self._loop_detector.check(tool_name, arguments)

@@ -19,7 +19,7 @@ from clyro.constants import ISSUE_TRACKER_URL
 from clyro.dry_run import resolve_dry_run_env
 
 from .audit import AuditLogger
-from .backend import resolve_agent_id
+from .backend import resolve_agent_id, set_dry_run
 from .config import ConfigError, HookConfig, load_hook_config
 from .constants import EXIT_FAIL_CLOSED, EXIT_FAIL_OPEN, EXIT_OK
 from .evaluator import evaluate
@@ -179,6 +179,13 @@ def cmd_trace(args: argparse.Namespace) -> int:
     except ConfigError as e:
         logger.warning("trace_config_error", error=str(e))
         return EXIT_OK
+
+    # A10 FRD-018: hooks run as short-lived per-invocation CLIs, so the process-level
+    # dry_run marker must be set in THIS (PostToolUse/Stop) process too — the PreToolUse
+    # `evaluate` process sets it independently. Without this, the cost-bearing
+    # tool_call_observe / session_end events emit unmarked and leak into enforced
+    # cost / drift / ARI aggregation.
+    set_dry_run(config.resolved_is_dry_run)
 
     audit = _create_audit(config)
 

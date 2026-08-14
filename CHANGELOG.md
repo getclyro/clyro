@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-22
+
+### Added
+
+**Absolute ceiling now enforced on the MCP wrapper and Claude Code hooks (FRD-021 parity).**
+The non-suppressable runaway backstop previously existed only on the SDK. It now applies to
+all three surfaces via `global.absolute_max_steps` (default 1,000,000) and
+`global.absolute_max_cost_usd` (default $100,000) in the MCP/hooks config:
+
+- **MCP wrapper:** once cumulative steps or cost cross the ceiling, the wrapper returns a
+  real JSON-RPC error to the host (`absolute_step_ceiling` / `absolute_cost_ceiling`) and
+  does **not** forward the call — even in dry-run.
+- **Claude Code hooks:** the PreToolUse hook returns a real block (the tool does not run) —
+  even in dry-run.
+- The ceiling is checked *before* the soft stages so dry-run's forward/allow-on-soft-block
+  cannot short-circuit it on a runaway. It fires regardless of `enforcement_mode` and of the
+  soft `max_steps` / `max_cost_usd`. Set it far above the soft maxima.
+
+### Fixed
+
+**Dry-run: a `default_action` block wrote a real `policy_violations` row.** The SDK defers
+`default_action` (no rule matched) to the backend `POST /v1/policies/evaluate`, which persisted a
+`policy_violations` row for the block regardless of mode — so a dry-run session showed a real
+violation (contaminating violation counts, ROI, and the evidence pack) even though the SDK
+recorded only a `would_block`. The SDK now sends `context.dry_run` on the evaluate request; the
+backend returns the decision but skips the write in dry-run (isolate-at-write, FRD-010/017).
+The MCP wrapper and hooks were unaffected — they evaluate `default_action` locally and already
+suppress violation reporting in dry-run.
+
+> **Deploy order: backend first.** This SDK sends a new `context.dry_run` field the backend must
+> accept. A new SDK against an old backend fails validation on dry-run `default_action` evaluations
+> (the SDK degrades safely — it records a `would_block` and proceeds — but the true policy decision
+> is lost for that call). Enforce-mode traffic is unaffected (the field is only sent in dry-run).
+
+**Absolute ceiling was bypassed on several SDK enforcement paths.** The ceiling was only
+checked in `Session.record_event`; `record_step` (the main wrapper step path), `record_llm_call`,
+and `add_cost` skipped it, and the Anthropic, OpenAI, and standalone Claude Agent SDK adapters
+either bypassed `record_event` or swallowed `AbsoluteCeilingExceededError`. In dry-run (or with
+soft limits disabled) a genuine runaway could therefore run unbounded. All these paths now
+enforce the ceiling.
+
+**Hooks: dry-run marker missing on cost-bearing trace events.** The PostToolUse/Stop trace
+processes never set the process-level dry-run flag, so `tool_call_observe` / `session_end`
+events emitted unmarked and leaked into enforced cost / drift / Reliability aggregation. They
+are now marked and isolated.
+
+**MCP: a would-block could be lost on a mid-exchange send failure.** The dry-run branch sent
+downstream before recording the audit/marker; a failing HTTP `send()` then dropped the
+`would_block` entirely. It is now recorded before the send, matching the allow branch.
+
+**Policy: a backend error with `fail_open=false` hard-blocked in dry-run.** The error path now
+records a latched `would_block` and proceeds in dry-run, instead of raising (which would stop
+the agent and emit nothing).
+
+## [0.3.4] - 2026-07-21
+
+### Added
+
+**Native HTTP (Streamable HTTP) downstream transport for the MCP wrapper.**
+`clyro-mcp wrap --transport http --url <URL>` governs a remote MCP server reached
+over HTTP instead of spawning a local stdio child — the wrapper still speaks stdio
+upstream to the host, so governance (step/cost limits, loop detection, policies,
+audit) is unchanged; only the downstream leg differs. Includes the SSRF safety
+floor with resolved-IP pinning, per-hop redirect re-validation, TLS policy,
+static-credential attachment, `Mcp-Session-Id` handling, and bounded reconnection.
+Loopback/plaintext targets require the explicit `--allow-plaintext` relaxation.
+
+### Fixed
+
+**Dry-run now forwards would-be-blocked calls over HTTP.** The router's dry-run
+branch used the stdio-only `write_to_child`; `HttpTransport` implements the
+`ServerTransport` protocol (`send`) and has no such method, so dry-run raised
+`AttributeError` over HTTP and never forwarded the call — silently behaving like a
+hard block, the opposite of its contract. Behaviour on stdio is unchanged.
+
 ## [0.3.3] - 2026-07-20
 
 ### Added

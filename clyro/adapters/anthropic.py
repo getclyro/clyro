@@ -540,6 +540,11 @@ class _TracedMessagesBase:
         """
         # Step limit  # Implements FRD-008
         session._step_number += 1
+        # FRD-021: non-disableable absolute ceiling — fires even in dry_run and even
+        # with the soft enable_* limits off. This adapter bypasses session.record_event()
+        # (it updates _step_number/_cumulative_cost directly), so the ceiling must be
+        # checked here; it propagates via the ExecutionControlError handler in the caller.
+        session._check_absolute_ceiling()
         if self._config.controls.enable_step_limit:
             if session.step_number > self._config.controls.max_steps:
                 # A10 dry-run: record a would-block and proceed (FRD-020/022).

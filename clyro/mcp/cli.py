@@ -33,6 +33,7 @@ from clyro.mcp.audit import AuditLogger
 from clyro.mcp.log import get_logger
 from clyro.mcp.prevention import PreventionStack
 from clyro.mcp.router import MessageRouter
+from clyro.mcp.server_transport import TransportError
 from clyro.mcp.session import McpSession
 from clyro.mcp.terminal import McpTerminalLogger
 from clyro.mcp.transport import StdioTransport
@@ -60,6 +61,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to YAML policy config (default: ~/.clyro/mcp-wrapper/mcp-config.yaml)",
     )
+    # Native HTTP transport (FRD-021/022/042/039). Override the YAML config.
+    wrap_parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default=None,
+        help="Downstream transport (default: stdio, or config value)",
+    )
+    wrap_parser.add_argument(
+        "--url",
+        default=None,
+        help="Remote MCP server URL (required for --transport http)",
+    )
+    wrap_parser.add_argument(
+        "--allow-plaintext",
+        action="store_true",
+        help="Permit plaintext/loopback HTTP targets (the single safety-floor relaxation, FRD-039)",
+    )
+
     # A10 dry-run (monitor) mode. Implements FRD-002 (CLI override).
     wrap_parser.add_argument(
         "--dry-run",
@@ -250,14 +269,83 @@ async def _init_backend(config, session, server_command, dry_run: bool = False):
     return sync_manager, trace_factory, http_client
 
 
+def _build_transport(config, server_command: list[str]):
+    """Build the downstream transport from config (FRD-021/022/042).
+
+    Returns ``(transport, label)``. STDIO is the default; HTTP is used when
+    ``config.transport == "http"`` and wires the safety floor, TLS policy, and
+    the static-credential provider (D21). Selection errors refuse startup.
+    """
+    from clyro.mcp.selector import SelectionError, select_transport
+
+    try:
+        sel = select_transport(
+            transport=config.transport,
+            url=config.server.url,
+            server_command=server_command,
+        )
+    except SelectionError as exc:
+        logger.error("transport_selection_failed", error=str(exc))
+        print(f"clyro-mcp: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if sel.transport == "stdio":
+        return StdioTransport(sel.server_command), "stdio"
+
+    # HTTP (FRD-020/042). Compose the outbound-safety trio. Component
+    # construction can reject bad config with a TransportError — e.g. a supplied
+    # CA bundle that does not exist (FRD-046). Surface it as a clean refuse-to-
+    # start, like a SelectionError above, rather than letting it escape as a
+    # traceback.
+    from clyro.mcp.auth import CredentialProvider
+    from clyro.mcp.http_transport import HttpTransport
+    from clyro.mcp.safety import SafetyFloor
+    from clyro.mcp.tls import TlsPolicy
+
+    try:
+        floor = SafetyFloor(allow_plaintext=config.server.allow_plaintext)
+        tls = TlsPolicy(config.server.ca_bundle)
+        # FRD-033/034: the credential may live under any header the operator
+        # names. Hardcoding "Authorization" here meant a credential configured
+        # elsewhere was silently unsent AND left unmasked in records (S2).
+        auth = CredentialProvider(
+            config.server.headers.get(config.server.auth_header),
+            header_name=config.server.auth_header,
+        )
+        transport = HttpTransport(
+            sel.url,
+            floor=floor,
+            tls=tls,
+            auth=auth,
+            liveness_secs=config.server.liveness_secs,
+            max_reconnect=config.server.reconnect.max_attempts,  # FRD-056
+        )
+    except TransportError as exc:
+        logger.error("transport_setup_failed", error=str(exc))
+        print(f"clyro-mcp: {exc}", file=sys.stderr)
+        sys.exit(1)
+    return transport, "http"
+
+
 async def _async_main(
     server_command: list[str],
     config_path: str | None,
+    *,
+    transport: str | None = None,
+    url: str | None = None,
+    allow_plaintext: bool = False,
     dry_run_cli: bool = False,
 ) -> int:
     """Core async entry point — creates all components and runs the router."""
     # 0. Recover any orphaned session from a previous SIGKILL
     config = load_config(config_path)
+    # CLI flags override YAML config (FRD-021/022/042/039).
+    if transport:
+        config.transport = transport
+    if url:
+        config.server.url = url
+    if allow_plaintext:
+        config.server.allow_plaintext = True
     _recover_orphaned_session(config.audit.log_path)
 
     # A10: resolve the enforcement mode with precedence CLI > env > config-file
@@ -285,10 +373,27 @@ async def _async_main(
             trace_factory = None
             http_client = None
 
+    # FRD-041: warn when migrating to HTTP without a pinned agent name, since
+    # identity continuity holds only for a pinned name (D3).
+    if config.transport == "http" and not config.backend.agent_name:
+        logger.warning(
+            "agent_name_unpinned",
+            hint="pin backend.agent_name to keep agent identity continuous across migration",
+        )
+
     # 3. Create components
-    transport = StdioTransport(server_command)
+    transport, transport_label = _build_transport(config, server_command)
     prevention = PreventionStack(config)
     audit = AuditLogger(config.audit, session.session_id)
+    audit.set_transport(transport_label)  # FRD-032 (audit records)
+    session.transport = transport_label  # FRD-032 (trace records, via metadata)
+    if transport_label == "http":
+        # FRD-034: mask the known credential value from any emitted record —
+        # whichever header the operator configured it under (S2).
+        audit.set_credential_mask(config.server.headers.get(config.server.auth_header))
+        # FRD-044: record the endpoint (audit records + trace metadata via session).
+        audit.set_endpoint(config.server.url)
+        session.endpoint = config.server.url
     terminal = McpTerminalLogger(is_backend_enabled=config.is_backend_enabled)
 
     # Attach backend to audit for dual-mode emission (FRD-015)
@@ -302,8 +407,17 @@ async def _async_main(
                 agent_id=str(session.agent_id),
             )
 
-    # 4. Spawn server
-    await transport.start()
+    # 4. Open the downstream leg (spawn child | connect + validate). A transport
+    # failure here (safety-floor refusal, unreachable server, TLS failure) is an
+    # expected, user-facing outcome — report it cleanly and exit non-zero rather
+    # than surfacing a traceback.
+    try:
+        await transport.open()
+    except TransportError as exc:
+        logger.error("transport_open_failed", error=str(exc))
+        print(f"clyro-mcp: cannot start — {exc}", file=sys.stderr)
+        audit.close()
+        return 1
 
     # 5. Audit session start + write marker for orphan detection
     audit.log_lifecycle("session_start")
@@ -328,8 +442,8 @@ async def _async_main(
         router.request_shutdown()
 
     def _handle_sighup() -> None:
-        # Forward SIGHUP to child (FRD-012)
-        proc = transport.process
+        # Forward SIGHUP to child (FRD-012); stdio-only (HTTP has no child).
+        proc = getattr(transport, "process", None)
         if proc and proc.pid:
             import os as _os
 
@@ -348,7 +462,7 @@ async def _async_main(
     try:
         exit_code = await router.run()
     finally:
-        await transport.terminate()
+        await transport.close()
         # Log session_end BEFORE backend shutdown so the trace event is enqueued
         # (duplicate-safe: audit._session_ended flag prevents double writes)
         audit.log_lifecycle(
@@ -392,14 +506,36 @@ def main() -> None:
         sys.exit(1)
 
     server_command = args.server_command
-    if not server_command:
-        logger.error("server_command_required")
-        print("Usage: clyro-mcp wrap <server-command> [args...]", file=sys.stderr)
-        sys.exit(1)
-
     # Strip leading '--' if present (argparse REMAINDER quirk)
     if server_command and server_command[0] == "--":
         server_command = server_command[1:]
 
-    exit_code = asyncio.run(_async_main(server_command, args.config, dry_run_cli=args.dry_run))
+    # HTTP takes its target from --url or the config file, so a server command
+    # is not required in that mode (FRD-042); STDIO still requires one. The
+    # transport may be selected in the config file, not only on the CLI — so when
+    # no CLI flag settles it, consult the config. Without this, an HTTP-in-config
+    # setup (transport: http in the YAML) is wrongly rejected for a missing stdio
+    # command, because the config is otherwise only read later in _async_main.
+    http_mode = args.transport == "http" or bool(args.url)
+    if not server_command and not http_mode and args.transport is None:
+        http_mode = load_config(args.config).transport == "http"
+    if not server_command and not http_mode:
+        logger.error("server_command_required")
+        print(
+            "Usage: clyro-mcp wrap <server-command>   (stdio)\n"
+            "       clyro-mcp wrap --transport http --url <URL>   (http)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    exit_code = asyncio.run(
+        _async_main(
+            server_command,
+            args.config,
+            transport=args.transport,
+            url=args.url,
+            allow_plaintext=args.allow_plaintext,
+            dry_run_cli=args.dry_run,
+        )
+    )
     sys.exit(exit_code)

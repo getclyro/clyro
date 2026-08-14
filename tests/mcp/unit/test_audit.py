@@ -151,3 +151,60 @@ class TestAuditParseError:
         entry = json.loads((tmp_path / "audit.jsonl").read_text().strip())
         assert entry["event"] == "parse_error"
         assert "not json" in entry["raw_preview"]
+
+
+class TestSettlementMarker:
+    """FRD-026 — a call settled without a response is recorded as *unresolved*.
+
+    Regression: the ``[unresolved: connection lost]`` marker was only forwarded to
+    the backend trace and never written to the local record, so in local mode a
+    dropped call was byte-for-byte indistinguishable from a completed one.
+    """
+
+    def test_unresolved_call_is_marked(self, tmp_path: Path) -> None:
+        al = _make_logger(str(tmp_path))
+        al.log_tool_call_response(
+            tool_name="echo",
+            request_id=2,
+            call_cost_usd=0.00012,
+            accumulated_cost_usd=0.00012,
+            duration_ms=0,
+            response_content="[unresolved: connection lost]",
+            unresolved=True,
+        )
+        al.close()
+
+        entry = json.loads((tmp_path / "audit.jsonl").read_text().strip())
+        assert entry["unresolved"] is True  # FRD-026: recorded as unresolved
+        assert entry["call_cost_usd"] > 0  # ...and never settled at zero
+
+    def test_completed_call_carries_no_marker(self, tmp_path: Path) -> None:
+        # The two record types must be distinguishable.
+        al = _make_logger(str(tmp_path))
+        al.log_tool_call_response(
+            tool_name="echo",
+            request_id=2,
+            call_cost_usd=0.00027,
+            accumulated_cost_usd=0.00027,
+            duration_ms=4,
+            response_content="Echo: hi",
+        )
+        al.close()
+
+        entry = json.loads((tmp_path / "audit.jsonl").read_text().strip())
+        assert "unresolved" not in entry
+
+    def test_response_content_not_written_to_local_record(self, tmp_path: Path) -> None:
+        # Tool output must never land in the audit log (privacy/size) — the
+        # marker carries the state instead of the payload.
+        al = _make_logger(str(tmp_path))
+        al.log_tool_call_response(
+            tool_name="echo",
+            request_id=2,
+            call_cost_usd=0.001,
+            accumulated_cost_usd=0.001,
+            response_content="SECRET-TOOL-OUTPUT",
+        )
+        al.close()
+
+        assert "SECRET-TOOL-OUTPUT" not in (tmp_path / "audit.jsonl").read_text()

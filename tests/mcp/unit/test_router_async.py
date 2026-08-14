@@ -33,7 +33,7 @@ def _make_router(
     config = WrapperConfig(default_action="allow")
     session = McpSession()
     transport = MagicMock(spec=StdioTransport)
-    transport.write_to_child = AsyncMock()
+    transport.send = AsyncMock()
     prevention = MagicMock(spec=PreventionStack)
     if prevention_result is not None:
         prevention.evaluate.return_value = prevention_result
@@ -140,10 +140,10 @@ class TestHostReaderBrokenPipe:
 
     @pytest.mark.asyncio
     async def test_broken_pipe_triggers_shutdown(self) -> None:
-        """BrokenPipeError during write_to_child sets shutdown event."""
+        """BrokenPipeError during send sets shutdown event."""
         allow = AllowDecision(tool_name="read_file", step_number=1)
         router, transport, prevention, audit = _make_router(allow)
-        transport.write_to_child = AsyncMock(side_effect=BrokenPipeError("dead"))
+        transport.send = AsyncMock(side_effect=BrokenPipeError("dead"))
 
         msg = {
             "jsonrpc": "2.0",
